@@ -78,20 +78,28 @@ class TRPGMessageHandler(BaseEventHandler):
         if not plain_text:
             return True, True, None, None, None
         
-        # 命令消息交给命令处理器处理，但仍然阻止其他插件
+        # 命令消息处理
         if plain_text.startswith("/"):
             # 检查是否是跑团相关命令
-            trpg_commands = ["/trpg", "/r", "/roll", "/join", "/pc", "/inv", "/hp", "/mp", "/dm", "/lore", "/module"]
+            trpg_commands = ["/trpg", "/r", "/roll", "/join", "/pc", "/inv", "/hp", "/mp", "/dm", "/lore", "/module", "/save"]
             is_trpg_command = any(plain_text.startswith(cmd) for cmd in trpg_commands)
+            
+            integration_config = _plugin_config.get("integration", {})
+            takeover = integration_config.get("takeover_message", True)
             
             if is_trpg_command:
                 # 跑团命令，让命令处理器处理，但阻止其他插件
-                integration_config = _plugin_config.get("integration", {})
                 block_others = integration_config.get("block_other_plugins", True)
                 return True, not block_others, None, None, None
             else:
-                # 非跑团命令，放行
-                return True, True, None, None, None
+                # 非跑团命令：根据 takeover_message 配置决定是否放行
+                # 如果完全接管模式，则阻止其他命令；否则放行
+                if takeover:
+                    # 完全接管模式下，忽略非跑团命令（不处理也不放行给 MaiBot）
+                    return True, False, None, None, None
+                else:
+                    # 非完全接管模式，放行给 MaiBot 处理
+                    return True, True, None, None, None
         
         # 获取用户信息
         user_id = None
