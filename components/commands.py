@@ -616,7 +616,7 @@ class ModuleCommand(BaseCommand):
     
     command_name = "module"
     command_description = "模组管理"
-    command_pattern = r"^/module(?:\s+(list|info|load))?(?:\s+(.+))?$"
+    command_pattern = r"^/module(?:\s+(list|info|load|import))?(?:\s+(.+))?$"
 
     async def execute(self) -> Tuple[bool, Optional[str], int]:
         if not _module_loader:
@@ -632,11 +632,14 @@ class ModuleCommand(BaseCommand):
             return await self._show_module_info(args)
         elif action == "load" and args:
             return await self._load_module(args)
+        elif action == "import":
+            return await self._import_module_hint()
         
         await self.send_text("""📚 模组命令用法:
 • /module list - 列出所有可用模组
 • /module info [模组ID] - 查看模组详情
 • /module load [模组ID] - 加载模组开始跑团
+• /module import - 查看如何导入自定义模组
 
 💡 也可以直接使用 /trpg start [模组ID] 开始""")
         return True, None, 2
@@ -743,3 +746,45 @@ class ModuleCommand(BaseCommand):
 📋 使用 /join [角色名] 加入冒险！""")
         
         return True, f"模组 {module.info.name} 已加载", 2
+
+    async def _import_module_hint(self) -> Tuple[bool, str, int]:
+        """显示模组导入说明"""
+        await self.send_text("""📥 导入自定义模组
+
+支持两种方式导入模组：
+
+1️⃣ JSON 格式（推荐）
+将模组 JSON 文件放入插件目录：
+`plugins/MaiBot_TRPG_DM/data/modules/`
+
+JSON 格式参考预设模组结构。
+
+2️⃣ PDF 模组导入
+需要安装 PDF 解析库（任选其一）：
+• pip install PyMuPDF
+• pip install pdfplumber
+• pip install PyPDF2
+
+然后将 PDF 文件放入：
+`plugins/MaiBot_TRPG_DM/data/pdf_import/`
+
+使用管理命令导入（需要服务器端操作）。
+
+📝 模组 JSON 基本结构：
+```json
+{
+  "info": {
+    "id": "my_module",
+    "name": "我的模组",
+    "genre": "fantasy",
+    "difficulty": "normal",
+    "player_count": "2-4"
+  },
+  "world_name": "世界名称",
+  "intro_text": "开场白...",
+  "lore": ["设定1", "设定2"]
+}
+```
+
+详细格式请参考 README.md""")
+        return True, None, 2

@@ -7,7 +7,7 @@
 ### 模型配置建议
 本插件使用 MaiBot 的 **replyer 模型** 生成 DM 响应。为获得最佳体验：
 
-1. **使用强大的 replyer 模型**：推荐 GPT-4、Claude-3、Qwen-Max 等能力较强的模型
+1. **使用强大的 replyer 模型**：推荐 GPT-5、Claude-4.5、Qwen-Max、Gemini 3 等能力较强的模型
 2. **简化人格提示词**：MaiBot 的人格设定会与 DM 角色融合，建议使用简短的人格描述（50字以内），避免过长的提示词占用上下文
 3. **调整温度参数**：在 `config.toml` 中设置 `llm_temperature = 0.8` 以获得更有创意的响应
 
@@ -279,6 +279,64 @@ allow_mid_join = true
 
 ---
 
+## 📥 导入自定义模组
+
+### JSON 格式（推荐）
+
+将模组 JSON 文件放入 `data/modules/` 目录即可自动识别。
+
+基本结构：
+```json
+{
+  "info": {
+    "id": "my_module",
+    "name": "我的模组",
+    "description": "模组简介",
+    "author": "作者名",
+    "genre": "fantasy",
+    "difficulty": "normal",
+    "player_count": "2-4",
+    "duration": "2-3小时",
+    "tags": ["奇幻", "冒险"]
+  },
+  "world_name": "世界名称",
+  "world_background": "世界背景描述...",
+  "lore": ["设定1", "设定2"],
+  "intro_text": "开场白文本...",
+  "starting_location": "起始地点",
+  "starting_time": "day",
+  "starting_weather": "sunny",
+  "npcs": {
+    "NPC名": {
+      "name": "NPC名",
+      "description": "描述",
+      "location": "位置",
+      "attitude": "friendly"
+    }
+  },
+  "dm_notes": "给DM的提示"
+}
+```
+
+### PDF 模组导入
+
+支持从 PDF 文件自动提取模组信息（实验性功能）。
+
+1. 安装 PDF 解析库（任选其一）：
+```bash
+pip install PyMuPDF    # 推荐，速度快
+pip install pdfplumber # 表格识别好
+pip install PyPDF2     # 轻量级
+```
+
+2. 将 PDF 文件放入 `data/pdf_import/` 目录
+
+3. 插件会使用 LLM 自动解析 PDF 内容并生成模组 JSON
+
+注意：PDF 解析依赖 LLM 能力，建议使用支持长文本的模型。
+
+---
+
 ## 📁 数据存储
 
 ```
@@ -286,7 +344,8 @@ data/
 ├── sessions/      # 会话存档
 ├── players/       # 玩家数据
 ├── lore/          # 世界观设定
-└── modules/       # 自定义模组
+├── modules/       # 自定义模组 (JSON)
+└── pdf_import/    # PDF 导入目录
 ```
 
 ---
