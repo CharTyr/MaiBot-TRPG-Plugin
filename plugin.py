@@ -46,7 +46,11 @@ from .components.commands import (
     DMCommand,
     LoreCommand,
     ModuleCommand,
+    SaveSlotCommand,
+    ImageCommand,
+    AdminJoinConfirmCommand,
     set_services as set_command_services,
+    set_config as set_command_config,
 )
 from .components.handlers import (
     TRPGMessageHandler,
@@ -170,8 +174,8 @@ class TRPGDMPlugin(BasePlugin):
         # 获取配置
         config = self.plugin_config or {}
         
-        # 初始化存储管理器
-        self._storage = StorageManager(str(self.data_dir))
+        # 初始化存储管理器（传入配置）
+        self._storage = StorageManager(str(self.data_dir), config)
         
         # 初始化骰子服务
         dice_config = config.get("dice", {})
@@ -186,8 +190,9 @@ class TRPGDMPlugin(BasePlugin):
         # 初始化模组加载器
         self._module_loader = ModuleLoader(self.data_dir / "modules")
         
-        # 注入服务到组件
+        # 注入服务和配置到组件
         set_command_services(self._storage, self._dice_service, self._dm_engine, self._module_loader)
+        set_command_config(config)
         set_handler_services(self._storage, self._dm_engine, config)
         set_tool_services(self._storage, self._dice_service)
         
@@ -210,6 +215,9 @@ class TRPGDMPlugin(BasePlugin):
             (DMCommand.get_command_info(), DMCommand),
             (LoreCommand.get_command_info(), LoreCommand),
             (ModuleCommand.get_command_info(), ModuleCommand),
+            (SaveSlotCommand.get_command_info(), SaveSlotCommand),
+            (ImageCommand.get_command_info(), ImageCommand),
+            (AdminJoinConfirmCommand.get_command_info(), AdminJoinConfirmCommand),
             
             # 事件处理器
             (TRPGMessageHandler.get_handler_info(), TRPGMessageHandler),

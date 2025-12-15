@@ -788,3 +788,223 @@ JSON 格式参考预设模组结构。
 
 详细格式请参考 README.md""")
         return True, None, 2
+
+
+# 全局配置引用
+_plugin_config: dict = {}
+
+
+def set_config(config: dict):
+    """设置配置引用"""
+    global _plugin_config
+    _plugin_config = config
+
+
+def _is_admin(user_id: str) -> bool:
+    """检查用户是否是管理员"""
+    admin_users = _plugin_config.get("permissions", {}).get("admin_users", [])
+    return str(user_id) in [str(a) for a in admin_users]
+
+
+class SaveSlotCommand(BaseCommand):
+    """存档插槽管理命令"""
+    
+    command_name = "save_slot"
+    command_description = "存档插槽管理"
+    command_pattern = r"^/slot(?:\s+(list|save|load|delete))?(?:\s+(\d+))?$"
+
+    async def execute(self) -> Tuple[bool, Optional[str], int]:
+        if not _storage:
+            return False, "插件未正确初始化", 0
+        
+        stream_id = self.message.chat_stream.stream_id
+        action = self.matched_groups.get("1", "list") or "list"
+        slot_num = self.matched_groups.get("2", "")
+        
+        if action == "list":
+            return await self._list_slots(stream_id)
+        elif action == "save" and slot_num:
+            return await self._save_to_slot(stream_id, int(slot_num))
+        elif action == "load" and slot_num:
+            return await self._load_from_slot(stream_id, int(slot_num))
+        elif action == "delete" and slot_num:
+            return await self._delete_slot(stream_id, int(slot_num))
+        
+        await self.send_text("""💾 存档插槽命令用法:
+• /slot list - 查看所有存档插槽
+• /slot save [插槽号] - 保存当前进度到插槽
+• /slot load [插槽号] - 从插槽加载存档
+• /slot delete [插槽号] - 删除插槽存档
+
+💡 每个群组有独立的存档插槽""")
+        return True, None, 2
+
+    async def _list_slots(self, stream_id: str) -> Tuple[bool, str, int]:
+        """列出所有存档插槽"""
+        slots = await _storage.list_save_slots(stream_id)
+        
+        text = "💾 存档插槽:\n"
+        for slot in slots:
+            slot_num = slot["slot"]
+            if slot.get("exists"):
+                world_name = slot.get("world_name", "未知")
+                player_count = slot.get("player_count", 0)
+                saved_at = slot.get("created_at", "未知")
+                text += f"\n📁 插槽 {slot_num}: {world_name}\n"
+                text += f"   👥 {player_count}名玩家 | 📅 {saved_at}\n"
+            else:
+                text += f"\n📁 插槽 {slot_num}: (空)\n"
+        
+        await self.send_text(text)
+        return True, None, 2
+
+    async def _save_to_slot(self, stream_id: str, slot_num: int) -> Tuple[bool, str, int]:
+        """保存到插槽"""
+        success, message = await _storage.save_to_slot(stream_id, slot_num)
+        
+        if success:
+            await self.send_text(f"💾 {message}")
+        else:
+            await self.send_text(f"⚠️ {message}")
+        
+        return success, message, 2
+
+    async def _load_from_slot(self, stream_id: str, slot_num: int) -> Tuple[bool, str, int]:
+        """从插槽加载"""
+        success, message = await _storage.load_from_slot(stream_id, slot_num)
+        
+        if success:
+            await self.send_text(f"💾 {message}\n\n使用 /trpg status 查看当前状态")
+        else:
+            await self.send_text(f"⚠️ {message}")
+        
+        return success, message, 2
+
+    async def _delete_slot(self, stream_id: str, slot_num: int) -> Tuple[bool, str, int]:
+        """删除插槽"""
+        # 检查权限
+        user_id = str(self.message.message_info.user_info.user_id)
+        if not _is_admin(user_id):
+            await self.send_text("⚠️ 只有管理员可以删除存档")
+            return False, "权限不足", 0
+        
+        success, message = await _storage.delete_slot(stream_id, slot_num)
+        
+        if success:
+            await self.send_text(f"🗑️ {message}")
+        else:
+            await self.send_text(f"⚠️ {message}")
+        
+        return success, message, 2
+
+
+class ImageCommand(BaseCommand):
+    """场景图片生成命令"""
+    
+    command_name = "trpg_image"
+    command_description = "生成场景图片"
+    command_pattern = r"^/scene(?:\s+(image|pic))?(?:\s+(.+))?$"
+
+    async def execute(self) -> Tuple[bool, Optional[str], int]:
+        if not _storage:
+            return False, "插件未正确初始化", 0
+        
+        stream_id = self.message.chat_stream.stream_id
+        context = self.matched_groups.get("2", "").strip()
+        
+        session = await _storage.get_session(stream_id)
+        if not session or not session.is_active():
+            await self.send_text("⚠️ 当前没有进行中的跑团会话")
+            return False, "无会话", 0
+        
+        # 检查图片生成是否启用
+        image_config = _plugin_config.get("image", {})
+        if not image_config.get("enabled", False):
+            await self.send_text("⚠️ 场景图片生成功能未启用\n请在 config.toml 中配置 [image] 节")
+            return False, "功能未启用", 0
+        
+        await self.send_text("🎨 正在生成场景图片，请稍候...")
+        
+        try:
+            from ..services.image_generator import ImageGenerator
+            
+            generator = ImageGenerator(_plugin_config)
+            success, result = await generator.generate_scene_image(session, context)
+            
+            if success:
+                # 发送图片
+                await self.send_image_base64(result)
+                session.add_history("system", "生成了场景图片")
+                await _storage.save_session(session)
+                return True, "图片生成成功", 2
+            else:
+                await self.send_text(f"⚠️ 图片生成失败: {result}")
+                return False, result, 0
+                
+        except Exception as e:
+            logger.error(f"生成场景图片失败: {e}")
+            await self.send_text(f"⚠️ 图片生成失败: {e}")
+            return False, str(e), 0
+
+
+class AdminJoinConfirmCommand(BaseCommand):
+    """管理员确认玩家加入命令"""
+    
+    command_name = "admin_join_confirm"
+    command_description = "确认/拒绝玩家加入请求"
+    command_pattern = r"^/confirm(?:\s+(accept|reject))?(?:\s+(\d+))?$"
+
+    async def execute(self) -> Tuple[bool, Optional[str], int]:
+        if not _storage:
+            return False, "插件未正确初始化", 0
+        
+        stream_id = self.message.chat_stream.stream_id
+        user_id = str(self.message.message_info.user_info.user_id)
+        
+        # 检查权限
+        if not _is_admin(user_id):
+            await self.send_text("⚠️ 只有管理员可以确认加入请求")
+            return False, "权限不足", 0
+        
+        action = self.matched_groups.get("1", "")
+        target_user = self.matched_groups.get("2", "")
+        
+        if not action:
+            # 显示待确认列表
+            pending = _storage.get_all_pending_joins(stream_id)
+            if not pending:
+                await self.send_text("📋 没有待确认的加入请求")
+                return True, None, 2
+            
+            text = "📋 待确认的加入请求:\n"
+            for uid, char_name in pending.items():
+                text += f"• {char_name} (用户ID: {uid})\n"
+            text += "\n使用 /confirm accept [用户ID] 确认\n使用 /confirm reject [用户ID] 拒绝"
+            await self.send_text(text)
+            return True, None, 2
+        
+        if not target_user:
+            await self.send_text("⚠️ 请指定用户ID")
+            return False, "缺少参数", 0
+        
+        character_name = _storage.remove_pending_join(stream_id, target_user)
+        if not character_name:
+            await self.send_text(f"⚠️ 未找到用户 {target_user} 的加入请求")
+            return False, "请求不存在", 0
+        
+        if action == "accept":
+            # 创建玩家
+            player = await _storage.create_player(stream_id, target_user, character_name)
+            session = await _storage.get_session(stream_id)
+            if session:
+                session.add_history("system", f"{character_name} 加入了冒险（管理员确认）")
+                await _storage.save_session(session)
+            
+            await self.send_text(f"✅ 已确认 {character_name} 加入冒险！")
+            return True, "已确认", 2
+        
+        elif action == "reject":
+            await self.send_text(f"❌ 已拒绝 {character_name} 的加入请求")
+            return True, "已拒绝", 2
+        
+        return False, "未知操作", 0

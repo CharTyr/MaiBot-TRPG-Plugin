@@ -5,6 +5,7 @@ TRPG DM 插件服务模块
 from .dice import DiceService, DiceResult
 from .dm_engine import DMEngine
 from .pdf_parser import PDFModuleParser, import_pdf_module
+from .image_generator import ImageGenerator
 
 __all__ = [
     "DiceService",
@@ -12,4 +13,5 @@ __all__ = [
     "DMEngine",
     "PDFModuleParser",
     "import_pdf_module",
+    "ImageGenerator",
 ]

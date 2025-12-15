@@ -3,13 +3,14 @@
 
 [plugin]
 # 配置文件版本
-config_version = "1.1.0"
+config_version = "1.2.0"
 # 是否启用插件
 enabled = true
+# 允许启用跑团的群组ID列表，格式：["qq:123456:group", "qq:654321:group", ...]
+# 留空表示所有群组都可以使用（需要手动 /trpg start 启用）
+allowed_groups = []
 
 [session]
-# 允许启用跑团的群组ID列表（留空表示需要手动启用）
-enabled_groups = []
 # 自动保存间隔（秒）
 auto_save_interval = 300
 # 历史记录最大条数（影响 AI 上下文长度）
@@ -20,6 +21,12 @@ verbose_mode = false
 allow_mid_join = true
 # 中途加入时是否需要 DM 确认（管理员）
 mid_join_require_confirm = false
+
+[save_slots]
+# 存档插槽数量（每个群组独立）
+max_slots = 3
+# 是否允许覆盖已有存档
+allow_overwrite = true
 
 [dice]
 # 默认骰子面数
@@ -74,7 +81,7 @@ block_other_plugins = true
 merge_bot_personality = true
 
 [permissions]
-# 管理员用户ID列表（可以使用 /dm 命令）
+# 管理员用户ID列表（可以使用 /dm 命令），格式：["123456", "654321"]
 admin_users = []
 # 是否允许玩家自行修改属性
 allow_player_edit_attributes = false
@@ -90,3 +97,40 @@ custom_module_dir = "data/modules"
 allow_pdf_import = true
 # PDF 解析使用的模型（需要支持长文本）
 pdf_parse_model = "utils"
+
+[image]
+# 是否启用场景图片生成
+enabled = false
+# 生图 API 类型：openai, gradio, sd_api, novelai
+api_type = "openai"
+# API 基础 URL
+base_url = ""
+# API 密钥
+api_key = ""
+# 模型名称（OpenAI 格式需要）
+model_name = ""
+# 默认图片尺寸预设：portrait(竖版768x1024), landscape(横版1024x768), wide(宽幅1024x512)
+default_size_preset = "landscape"
+# 自定义尺寸（优先于预设）
+custom_width = 0
+custom_height = 0
+# 是否自动在关键剧情点生成图片
+auto_generate = false
+# 自动生成的触发间隔（条消息）
+auto_generate_interval = 10
+# 场景图片提示词前缀
+prompt_prefix = "fantasy illustration, detailed background, "
+# 角色立绘提示词前缀
+character_prompt_prefix = "character portrait, detailed, "
+
+[llm_models]
+# 各功能使用的模型组配置
+# 留空表示使用默认模型
+# DM 响应使用的模型（推荐 replyer）
+dm_response_model = "replyer"
+# 场景图片提示词生成使用的模型（推荐 planner）
+image_prompt_model = "planner"
+# PDF 解析使用的模型（推荐 utils，需要支持长文本）
+pdf_parse_model = "utils"
+# 意图理解使用的模型（推荐 planner）
+intent_model = "planner"

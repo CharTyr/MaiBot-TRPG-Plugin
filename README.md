@@ -5,158 +5,63 @@
 ## ⚠️ 重要提示
 
 ### 模型配置建议
-本插件使用 MaiBot 的 **replyer 模型** 生成 DM 响应。为获得最佳体验：
+本插件充分利用 MaiBot 的多模型组能力：
 
-1. **使用强大的 replyer 模型**：推荐 GPT-5、Claude-4.5、Qwen-Max、Gemini 3 等能力较强的模型
-2. **简化人格提示词**：MaiBot 的人格设定会与 DM 角色融合，建议使用简短的人格描述（50字以内），避免过长的提示词占用上下文
-3. **调整温度参数**：在 `config.toml` 中设置 `llm_temperature = 0.8` 以获得更有创意的响应
+| 功能 | 推荐模型组 | 说明 |
+|------|-----------|------|
+| DM 响应 | replyer | 生成剧情叙述、NPC对话 |
+| 图片提示词 | planner | 分析场景生成绘图提示词 |
+| PDF 解析 | utils | 解析长文本模组 |
+| 意图理解 | planner | 理解玩家行动意图 |
 
-### 群组隔离
-- 每个群组的跑团数据完全独立
-- 一个群组同时只能有一个跑团会话
-- 插件仅在 `plugins/MaiBot_TRPG_DM/` 目录内操作，不会修改 MaiBot 主程序
+为获得最佳体验：
+1. **使用强大的 replyer 模型**：推荐 GPT-4、Claude-3、Qwen-Max
+2. **简化人格提示词**：建议 50 字以内，避免过长占用上下文
+3. **调整温度参数**：`llm_temperature = 0.8` 获得更有创意的响应
+
+### 群组配置
+在 `config.toml` 中配置允许使用的群组：
+```toml
+[plugin]
+# 格式：["qq:123456:group", "qq:654321:group"]
+# 留空表示所有群组都可以使用
+allowed_groups = []
+```
 
 ---
 
 ## 🎮 完整游玩流程示例
 
-以下是一个完整的跑团游戏流程，以「独行侦探」单人模组为例：
-
 ### 第一步：开始跑团
-
-**群主/管理员发送：**
 ```
 /trpg start solo_mystery
 ```
 
-**MaiBot 响应：**
-```
-🎲 跑团开始！
-
-📚 模组: 独行侦探
-🎭 类型: modern | 难度: easy
-👥 建议人数: 1 | ⏱️ 预计时长: 30-60分钟
-
-📖 独行侦探
-
-🌧️ 雨夜，你的侦探事务所。
-
-窗外的雨淅淅沥沥地下着，霓虹灯的光芒在雨幕中模糊成一片。
-你正准备收拾东西回家，却发现门缝下多了一封信...
-
-📋 常用命令:
-• /join [角色名] - 加入冒险
-• /r [骰子] - 掷骰子 (如 /r 2d6+3)
-• /pc show - 查看角色卡
-• /module info - 查看模组信息
-• /trpg end - 结束跑团
-```
-
 ### 第二步：玩家加入
-
-**玩家发送：**
 ```
 /join 李明
 ```
 
-**MaiBot 响应：**
-```
-🎭 欢迎 李明 加入冒险！
-
-📋 角色卡 - 李明
-━━━━━━━━━━━━━━━━━━
-❤️ HP: 20/20 | 💙 MP: 10/10
-
-📊 属性:
-  力量: 10 | 敏捷: 10 | 体质: 10
-  智力: 10 | 感知: 10 | 魅力: 10
-
-🎒 背包: (空)
-━━━━━━━━━━━━━━━━━━
-
-使用 /pc [属性] [值] 来自定义你的角色属性
-使用 /pc show 查看完整角色卡
-```
-
-### 第三步：开始冒险
-
-**玩家发送角色扮演消息：**
+### 第三步：角色扮演
 ```
 *拿起信封，仔细检查*
 ```
 
-**MaiBot (DM) 响应：**
-```
-你拿起那封白色信封，在台灯下仔细端详。
-
-信封是普通的白色信封，没有邮戳，显然是有人亲手送来的。
-你注意到信封上有一股淡淡的香水味——是一种昂贵的品牌。
-
-打开信封，里面只有一张纸条：
-「午夜，旧图书馆，真相在等待。」
-
-💡 可以检查信封的其他细节，或者准备出发
-```
-
 ### 第四步：进行检定
-
-**玩家发送：**
 ```
-我想仔细闻一下香水味，看能不能辨认出是什么品牌
 /r d20
 ```
 
-**MaiBot 响应：**
+### 第五步：存档管理
 ```
-🎲 掷骰结果
-━━━━━━━━━━━━
-1d20 = [15] = 15
-━━━━━━━━━━━━
-
-感知检定成功！
-
-你深吸一口气，那股香水味唤起了你的记忆。
-这是「夜之茉莉」，一款只在高档百货公司出售的香水。
-能用得起这种香水的人，非富即贵。
-
-看来这封信的主人，身份不简单。
-```
-
-### 第五步：继续探索
-
-**玩家发送：**
-```
-收拾好东西，带上手电筒，前往旧图书馆
-```
-
-**MaiBot (DM) 响应：**
-```
-你穿上风衣，将手电筒和笔记本塞进口袋，推门走入雨夜。
-
-街道上行人稀少，路灯在雨幕中显得格外昏暗。
-你沿着记忆中的路线，穿过几条小巷，来到了旧图书馆门前。
-
-📍 位置变更: 图书馆门口
-
-这座维多利亚式建筑已经废弃多年，铁门生锈斑驳。
-但你注意到，门锁上有新的划痕——最近有人用工具开过锁。
-
-门口的台阶上，坐着一个老人，他似乎在等什么人。
-
-💡 可以与老人交谈，或者直接进入图书馆
+/slot save 1    # 保存到插槽1
+/slot list      # 查看所有存档
+/slot load 1    # 加载插槽1
 ```
 
 ### 第六步：结束跑团
-
-**管理员发送：**
 ```
 /trpg end
-```
-
-**MaiBot 响应：**
-```
-🎲 跑团结束！感谢各位冒险者的参与！
-存档已保存，下次可以继续冒险。
 ```
 
 ---
@@ -168,12 +73,20 @@
 |------|------|
 | `/trpg start` | 显示可用模组列表 |
 | `/trpg start [模组ID]` | 使用预设模组开始 |
-| `/trpg start [世界观名称]` | 自由模式开始 |
+| `/trpg start [世界观]` | 自由模式开始 |
 | `/trpg end` | 结束当前跑团 |
 | `/trpg status` | 查看会话状态 |
 | `/trpg save` | 手动保存 |
 | `/trpg pause` | 暂停跑团 |
 | `/trpg resume` | 继续跑团 |
+
+### 存档插槽
+| 命令 | 说明 |
+|------|------|
+| `/slot list` | 查看所有存档插槽 |
+| `/slot save [1-3]` | 保存到指定插槽 |
+| `/slot load [1-3]` | 从插槽加载存档 |
+| `/slot delete [1-3]` | 删除插槽存档（管理员） |
 
 ### 玩家操作
 | 命令 | 说明 |
@@ -210,11 +123,18 @@
 | `/dm event [描述]` | 触发事件 |
 | `/dm describe` | 描述环境 |
 
-### 模组命令
+### 场景图片（需配置）
 | 命令 | 说明 |
 |------|------|
-| `/module list` | 列出所有模组 |
-| `/module info [ID]` | 查看模组详情 |
+| `/scene image` | 生成当前场景图片 |
+| `/scene image [描述]` | 根据描述生成图片 |
+
+### 管理员命令
+| 命令 | 说明 |
+|------|------|
+| `/confirm` | 查看待确认的加入请求 |
+| `/confirm accept [用户ID]` | 确认加入 |
+| `/confirm reject [用户ID]` | 拒绝加入 |
 
 ---
 
@@ -227,44 +147,65 @@
 | 👻 幽灵庄园 (haunted_mansion) | 恐怖调查 | 🟡普通 | 2-4人 | 2-3小时 |
 | 🚀 霓虹暗影 (cyberpunk_heist) | 赛博朋克 | 🔴困难 | 3-4人 | 3-4小时 |
 
-**推荐新手**：使用 `/trpg start solo_mystery` 进行单人测试
-
 ---
 
 ## ⚙️ 配置说明
 
-编辑 `config.toml` 自定义插件行为：
+### 基本配置
+```toml
+[plugin]
+enabled = true
+# 允许的群组，留空表示所有群组
+allowed_groups = []
 
+[save_slots]
+max_slots = 3           # 存档插槽数量
+allow_overwrite = true  # 允许覆盖存档
+
+[permissions]
+# 管理员用户ID
+admin_users = ["123456", "654321"]
+```
+
+### DM 配置
 ```toml
 [dm]
-# 使用 MaiBot 的 replyer 模型（推荐）
-use_maibot_replyer = true
-# AI 创意程度 (0.0-2.0)
-llm_temperature = 0.8
-# 最大响应长度
-llm_max_tokens = 800
-# 自动生成剧情
-auto_narrative = true
-# DM 人格（简短为佳）
+use_maibot_replyer = true  # 使用 replyer 模型
+llm_temperature = 0.8      # AI 创意程度
+llm_max_tokens = 800       # 最大响应长度
+auto_narrative = true      # 自动生成剧情
 dm_personality = "你是一个经验丰富的跑团主持人。"
 
-[integration]
-# 完全接管消息处理
-takeover_message = true
-# 阻止其他插件
-block_other_plugins = true
-
-[session]
-# 允许中途加入
-allow_mid_join = true
+[llm_models]
+dm_response_model = "replyer"    # DM 响应
+image_prompt_model = "planner"   # 图片提示词
+pdf_parse_model = "utils"        # PDF 解析
+intent_model = "planner"         # 意图理解
 ```
+
+### 图片生成配置
+```toml
+[image]
+enabled = false              # 是否启用
+api_type = "openai"          # API 类型
+base_url = ""                # API 地址
+api_key = ""                 # API 密钥
+model_name = ""              # 模型名称
+default_size_preset = "landscape"  # 默认尺寸
+auto_generate = false        # 自动生成
+```
+
+图片尺寸预设：
+- `portrait`: 768x1024 (竖版，适合角色)
+- `landscape`: 1024x768 (横版，适合场景)
+- `wide`: 1024x512 (宽幅，适合全景)
+- `square`: 1024x1024 (正方形)
 
 ---
 
 ## 🎭 角色扮演格式
 
-在跑团中，以下格式会被识别为角色扮演并触发 DM 响应：
-
+以下格式会触发 DM 响应：
 ```
 *动作描述*          → *拔出长剑*
 （动作描述）        → （小心翼翼地推开门）
@@ -272,68 +213,19 @@ allow_mid_join = true
 【角色】对话        → 【李明】我来调查这个案件
 ```
 
-行动关键词也会触发响应：
-- 我要、我想、我尝试
-- 攻击、使用、查看、检查
-- 走向、前往、进入、离开
+行动关键词：我要、我想、攻击、使用、查看、前往...
 
 ---
 
 ## 📥 导入自定义模组
 
-### JSON 格式（推荐）
+### JSON 格式
+将 JSON 文件放入 `data/modules/` 目录。
 
-将模组 JSON 文件放入 `data/modules/` 目录即可自动识别。
-
-基本结构：
-```json
-{
-  "info": {
-    "id": "my_module",
-    "name": "我的模组",
-    "description": "模组简介",
-    "author": "作者名",
-    "genre": "fantasy",
-    "difficulty": "normal",
-    "player_count": "2-4",
-    "duration": "2-3小时",
-    "tags": ["奇幻", "冒险"]
-  },
-  "world_name": "世界名称",
-  "world_background": "世界背景描述...",
-  "lore": ["设定1", "设定2"],
-  "intro_text": "开场白文本...",
-  "starting_location": "起始地点",
-  "starting_time": "day",
-  "starting_weather": "sunny",
-  "npcs": {
-    "NPC名": {
-      "name": "NPC名",
-      "description": "描述",
-      "location": "位置",
-      "attitude": "friendly"
-    }
-  },
-  "dm_notes": "给DM的提示"
-}
-```
-
-### PDF 模组导入
-
-支持从 PDF 文件自动提取模组信息（实验性功能）。
-
-1. 安装 PDF 解析库（任选其一）：
-```bash
-pip install PyMuPDF    # 推荐，速度快
-pip install pdfplumber # 表格识别好
-pip install PyPDF2     # 轻量级
-```
-
-2. 将 PDF 文件放入 `data/pdf_import/` 目录
-
-3. 插件会使用 LLM 自动解析 PDF 内容并生成模组 JSON
-
-注意：PDF 解析依赖 LLM 能力，建议使用支持长文本的模型。
+### PDF 导入
+1. 安装解析库：`pip install PyMuPDF`
+2. 将 PDF 放入 `data/pdf_import/`
+3. 使用 LLM 自动解析
 
 ---
 
@@ -344,8 +236,9 @@ data/
 ├── sessions/      # 会话存档
 ├── players/       # 玩家数据
 ├── lore/          # 世界观设定
-├── modules/       # 自定义模组 (JSON)
-└── pdf_import/    # PDF 导入目录
+├── modules/       # 自定义模组
+├── save_slots/    # 存档插槽
+└── config/        # 运行时配置
 ```
 
 ---

@@ -108,6 +108,7 @@ class TRPGMessageHandler(BaseEventHandler):
         # 检查是否允许中途加入
         session_config = _plugin_config.get("session", {})
         allow_mid_join = session_config.get("allow_mid_join", True)
+        mid_join_require_confirm = session_config.get("mid_join_require_confirm", False)
         
         if not player and not allow_mid_join:
             # 不允许中途加入，忽略非玩家消息但仍阻止其他插件
@@ -115,6 +116,16 @@ class TRPGMessageHandler(BaseEventHandler):
             if integration_config.get("takeover_message", True):
                 return True, False, None, None, None
             return True, True, None, None, None
+        
+        # 检查是否有待确认的加入请求
+        if not player and mid_join_require_confirm:
+            pending = _storage.get_pending_join(stream_id, user_id)
+            if pending:
+                # 已有待确认请求，忽略消息
+                integration_config = _plugin_config.get("integration", {})
+                if integration_config.get("takeover_message", True):
+                    return True, False, None, None, None
+                return True, True, None, None, None
         
         # 检查是否是角色扮演消息或需要 DM 响应的消息
         is_roleplay = self._is_roleplay_message(plain_text)

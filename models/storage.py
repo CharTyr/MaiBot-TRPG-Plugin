@@ -3,7 +3,6 @@
 """
 
 import json
-import os
 import asyncio
 from pathlib import Path
 from typing import Dict, Optional, List, Any
@@ -14,17 +13,24 @@ from .player import Player
 class StorageManager:
     """数据存储管理器 - 负责所有数据的持久化"""
 
-    def __init__(self, data_dir: str):
+    def __init__(self, data_dir: str, config: Dict[str, Any] = None):
         self.data_dir = Path(data_dir)
         self.sessions_dir = self.data_dir / "sessions"
         self.players_dir = self.data_dir / "players"
         self.lore_dir = self.data_dir / "lore"
         self.config_dir = self.data_dir / "config"
+        self.slots_dir = self.data_dir / "save_slots"
+        
+        # 配置
+        self._config = config or {}
+        self._max_slots = self._config.get("save_slots", {}).get("max_slots", 3)
+        self._allowed_groups = self._config.get("plugin", {}).get("allowed_groups", [])
         
         # 内存缓存
         self._sessions: Dict[str, TRPGSession] = {}
-        self._players: Dict[str, Dict[str, Player]] = {}  # {stream_id: {user_id: Player}}
+        self._players: Dict[str, Dict[str, Player]] = {}
         self._enabled_groups: List[str] = []
+        self._pending_joins: Dict[str, Dict[str, str]] = {}  # {stream_id: {user_id: character_name}}
         
         # 确保目录存在
         self._ensure_directories()
@@ -34,8 +40,15 @@ class StorageManager:
 
     def _ensure_directories(self):
         """确保所有必要的目录存在"""
-        for directory in [self.sessions_dir, self.players_dir, self.lore_dir, self.config_dir]:
+        for directory in [self.sessions_dir, self.players_dir, self.lore_dir, 
+                          self.config_dir, self.slots_dir]:
             directory.mkdir(parents=True, exist_ok=True)
+
+    def update_config(self, config: Dict[str, Any]):
+        """更新配置"""
+        self._config = config
+        self._max_slots = config.get("save_slots", {}).get("max_slots", 3)
+        self._allowed_groups = config.get("plugin", {}).get("allowed_groups", [])
 
     async def initialize(self):
         """初始化存储管理器，加载所有数据"""
@@ -70,7 +83,7 @@ class StorageManager:
                 with open(session_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 session = TRPGSession.from_dict(data)
-                if session.status != "ended":  # 只加载未结束的会话
+                if session.status != "ended":
                     self._sessions[session.stream_id] = session
             except Exception as e:
                 print(f"加载会话文件失败 {session_file}: {e}")
@@ -94,6 +107,37 @@ class StorageManager:
                     except Exception as e:
                         print(f"加载玩家文件失败 {player_file}: {e}")
 
+    # ==================== 群组权限检查 ====================
+
+    def is_group_allowed(self, stream_id: str) -> bool:
+        """检查群组是否在允许列表中"""
+        if not self._allowed_groups:
+            return True  # 空列表表示允许所有群组
+        return stream_id in self._allowed_groups
+
+    def is_group_enabled(self, stream_id: str) -> bool:
+        """检查群组是否启用跑团"""
+        return stream_id in self._enabled_groups
+
+    async def enable_group(self, stream_id: str) -> bool:
+        """启用群组"""
+        if not self.is_group_allowed(stream_id):
+            return False
+        if stream_id not in self._enabled_groups:
+            self._enabled_groups.append(stream_id)
+            await self._save_enabled_groups()
+        return True
+
+    async def disable_group(self, stream_id: str):
+        """禁用群组"""
+        if stream_id in self._enabled_groups:
+            self._enabled_groups.remove(stream_id)
+            await self._save_enabled_groups()
+
+    def get_enabled_groups(self) -> List[str]:
+        """获取所有启用的群组"""
+        return self._enabled_groups.copy()
+
     # ==================== 会话操作 ====================
 
     async def get_session(self, stream_id: str) -> Optional[TRPGSession]:
@@ -107,9 +151,7 @@ class StorageManager:
         await self.save_session(session)
         
         # 自动启用该群组
-        if stream_id not in self._enabled_groups:
-            self._enabled_groups.append(stream_id)
-            await self._save_enabled_groups()
+        await self.enable_group(stream_id)
         
         return session
 
@@ -134,6 +176,167 @@ class StorageManager:
         """获取所有活跃会话"""
         return [s for s in self._sessions.values() if s.is_active()]
 
+    def has_active_session(self, stream_id: str) -> bool:
+        """检查是否有活跃会话"""
+        session = self._sessions.get(stream_id)
+        return session is not None and session.is_active()
+
+    # ==================== 存档插槽操作 ====================
+
+    def _get_slot_dir(self, stream_id: str) -> Path:
+        """获取群组的存档目录"""
+        # 将 stream_id 中的特殊字符替换为下划线
+        safe_id = stream_id.replace(":", "_").replace("/", "_")
+        slot_dir = self.slots_dir / safe_id
+        slot_dir.mkdir(parents=True, exist_ok=True)
+        return slot_dir
+
+    async def list_save_slots(self, stream_id: str) -> List[Dict[str, Any]]:
+        """列出群组的所有存档插槽"""
+        slot_dir = self._get_slot_dir(stream_id)
+        slots = []
+        
+        for i in range(1, self._max_slots + 1):
+            slot_file = slot_dir / f"slot_{i}.json"
+            if slot_file.exists():
+                try:
+                    with open(slot_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    slots.append({
+                        "slot": i,
+                        "world_name": data.get("session", {}).get("world_name", "未知"),
+                        "created_at": data.get("saved_at", "未知"),
+                        "player_count": len(data.get("players", [])),
+                        "exists": True,
+                    })
+                except Exception:
+                    slots.append({"slot": i, "exists": False, "error": True})
+            else:
+                slots.append({"slot": i, "exists": False})
+        
+        return slots
+
+    async def save_to_slot(self, stream_id: str, slot_number: int) -> Tuple[bool, str]:
+        """保存当前会话到指定插槽"""
+        if slot_number < 1 or slot_number > self._max_slots:
+            return False, f"插槽号必须在 1-{self._max_slots} 之间"
+        
+        session = await self.get_session(stream_id)
+        if not session:
+            return False, "当前没有进行中的跑团会话"
+        
+        slot_dir = self._get_slot_dir(stream_id)
+        slot_file = slot_dir / f"slot_{slot_number}.json"
+        
+        # 检查是否允许覆盖
+        allow_overwrite = self._config.get("save_slots", {}).get("allow_overwrite", True)
+        if slot_file.exists() and not allow_overwrite:
+            return False, f"插槽 {slot_number} 已有存档，不允许覆盖"
+        
+        # 收集玩家数据
+        players_data = []
+        if stream_id in self._players:
+            for player in self._players[stream_id].values():
+                players_data.append(player.to_dict())
+        
+        # 保存数据
+        import time
+        save_data = {
+            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "session": session.to_dict(),
+            "players": players_data,
+        }
+        
+        async with self._lock:
+            with open(slot_file, "w", encoding="utf-8") as f:
+                json.dump(save_data, f, ensure_ascii=False, indent=2)
+        
+        return True, f"已保存到插槽 {slot_number}"
+
+    async def load_from_slot(self, stream_id: str, slot_number: int) -> Tuple[bool, str]:
+        """从指定插槽加载存档"""
+        if slot_number < 1 or slot_number > self._max_slots:
+            return False, f"插槽号必须在 1-{self._max_slots} 之间"
+        
+        # 检查是否有活跃会话
+        if self.has_active_session(stream_id):
+            return False, "当前已有进行中的跑团会话，请先结束或保存"
+        
+        slot_dir = self._get_slot_dir(stream_id)
+        slot_file = slot_dir / f"slot_{slot_number}.json"
+        
+        if not slot_file.exists():
+            return False, f"插槽 {slot_number} 没有存档"
+        
+        try:
+            with open(slot_file, "r", encoding="utf-8") as f:
+                save_data = json.load(f)
+            
+            # 恢复会话
+            session_data = save_data.get("session", {})
+            session_data["stream_id"] = stream_id  # 确保使用当前群组ID
+            session_data["status"] = "active"  # 恢复为活跃状态
+            session = TRPGSession.from_dict(session_data)
+            self._sessions[stream_id] = session
+            await self.save_session(session)
+            
+            # 恢复玩家
+            self._players[stream_id] = {}
+            for player_data in save_data.get("players", []):
+                player_data["stream_id"] = stream_id
+                player = Player.from_dict(player_data)
+                self._players[stream_id][player.user_id] = player
+                await self.save_player(player)
+            
+            # 启用群组
+            await self.enable_group(stream_id)
+            
+            return True, f"已从插槽 {slot_number} 加载存档: {session.world_name}"
+            
+        except Exception as e:
+            return False, f"加载存档失败: {e}"
+
+    async def delete_slot(self, stream_id: str, slot_number: int) -> Tuple[bool, str]:
+        """删除指定插槽的存档"""
+        if slot_number < 1 or slot_number > self._max_slots:
+            return False, f"插槽号必须在 1-{self._max_slots} 之间"
+        
+        slot_dir = self._get_slot_dir(stream_id)
+        slot_file = slot_dir / f"slot_{slot_number}.json"
+        
+        if not slot_file.exists():
+            return False, f"插槽 {slot_number} 没有存档"
+        
+        try:
+            slot_file.unlink()
+            return True, f"已删除插槽 {slot_number} 的存档"
+        except Exception as e:
+            return False, f"删除失败: {e}"
+
+    # ==================== 中途加入确认 ====================
+
+    def add_pending_join(self, stream_id: str, user_id: str, character_name: str):
+        """添加待确认的加入请求"""
+        if stream_id not in self._pending_joins:
+            self._pending_joins[stream_id] = {}
+        self._pending_joins[stream_id][user_id] = character_name
+
+    def get_pending_join(self, stream_id: str, user_id: str) -> Optional[str]:
+        """获取待确认的加入请求"""
+        if stream_id in self._pending_joins:
+            return self._pending_joins[stream_id].get(user_id)
+        return None
+
+    def remove_pending_join(self, stream_id: str, user_id: str) -> Optional[str]:
+        """移除并返回待确认的加入请求"""
+        if stream_id in self._pending_joins:
+            return self._pending_joins[stream_id].pop(user_id, None)
+        return None
+
+    def get_all_pending_joins(self, stream_id: str) -> Dict[str, str]:
+        """获取群组所有待确认的加入请求"""
+        return self._pending_joins.get(stream_id, {}).copy()
+
     # ==================== 玩家操作 ====================
 
     async def get_player(self, stream_id: str, user_id: str) -> Optional[Player]:
@@ -146,14 +349,12 @@ class StorageManager:
         """创建新玩家"""
         if stream_id not in self._players:
             self._players[stream_id] = {}
-            # 确保玩家目录存在
             (self.players_dir / stream_id).mkdir(parents=True, exist_ok=True)
         
         player = Player(user_id=user_id, stream_id=stream_id, character_name=character_name)
         self._players[stream_id][user_id] = player
         await self.save_player(player)
         
-        # 将玩家添加到会话
         session = await self.get_session(stream_id)
         if session:
             session.add_player(user_id)
@@ -175,12 +376,10 @@ class StorageManager:
         if stream_id in self._players and user_id in self._players[stream_id]:
             del self._players[stream_id][user_id]
             
-            # 删除文件
             player_file = self.players_dir / stream_id / f"{user_id}.json"
             if player_file.exists():
                 player_file.unlink()
             
-            # 从会话中移除
             session = await self.get_session(stream_id)
             if session:
                 session.remove_player(user_id)
@@ -194,28 +393,6 @@ class StorageManager:
         if stream_id in self._players:
             return list(self._players[stream_id].values())
         return []
-
-    # ==================== 群组管理 ====================
-
-    def is_group_enabled(self, stream_id: str) -> bool:
-        """检查群组是否启用跑团"""
-        return stream_id in self._enabled_groups
-
-    async def enable_group(self, stream_id: str):
-        """启用群组"""
-        if stream_id not in self._enabled_groups:
-            self._enabled_groups.append(stream_id)
-            await self._save_enabled_groups()
-
-    async def disable_group(self, stream_id: str):
-        """禁用群组"""
-        if stream_id in self._enabled_groups:
-            self._enabled_groups.remove(stream_id)
-            await self._save_enabled_groups()
-
-    def get_enabled_groups(self) -> List[str]:
-        """获取所有启用的群组"""
-        return self._enabled_groups.copy()
 
     # ==================== 世界观设定 ====================
 
@@ -251,7 +428,6 @@ class StorageManager:
         
         await self._save_enabled_groups()
 
-    def has_active_session(self, stream_id: str) -> bool:
-        """检查是否有活跃会话"""
-        session = self._sessions.get(stream_id)
-        return session is not None and session.is_active()
+
+# 为了兼容性，添加 Tuple 导入
+from typing import Tuple
