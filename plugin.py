@@ -89,6 +89,8 @@ class TRPGDMPlugin(BasePlugin):
         "world": "世界状态设置",
         "dm": "DM 引擎设置",
         "permissions": "权限设置",
+        "integration": "MaiBot 融合设置",
+        "module": "模组系统设置",
     }
 
     # 配置 Schema 定义
@@ -130,6 +132,17 @@ class TRPGDMPlugin(BasePlugin):
             "admin_users": ConfigField(type=list, default=[], description="管理员用户ID列表"),
             "allow_player_edit_attributes": ConfigField(type=bool, default=False, description="是否允许玩家自行修改属性"),
             "allow_view_others": ConfigField(type=bool, default=True, description="是否允许玩家查看其他玩家状态"),
+            "allow_player_end_session": ConfigField(type=bool, default=False, description="是否允许非管理员结束跑团"),
+        },
+        "integration": {
+            "takeover_message": ConfigField(type=bool, default=True, description="跑团模式下是否完全接管消息处理"),
+            "block_other_plugins": ConfigField(type=bool, default=True, description="接管时是否阻止其他插件处理消息"),
+            "merge_bot_personality": ConfigField(type=bool, default=True, description="是否使用MaiBot的人格设定融合DM角色"),
+        },
+        "module": {
+            "custom_module_dir": ConfigField(type=str, default="data/modules", description="自定义模组目录"),
+            "allow_pdf_import": ConfigField(type=bool, default=True, description="是否允许导入PDF模组"),
+            "pdf_parse_model": ConfigField(type=str, default="utils", description="PDF解析使用的模型"),
         },
     }
 

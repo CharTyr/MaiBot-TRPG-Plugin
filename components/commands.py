@@ -67,7 +67,11 @@ class TRPGSessionCommand(BaseCommand):
         if existing and existing.is_active():
             return False, "⚠️ 当前群组已有进行中的跑团会话！使用 /trpg end 结束后再开始新的。", 2
         
-        world_name = world_name.strip() if world_name else "通用奇幻世界"
+        # 如果没有指定世界观，显示模组列表
+        if not world_name or not world_name.strip():
+            return await self._show_module_selection()
+        
+        world_name = world_name.strip()
         
         # 检查是否是预设模组
         if _module_loader:
@@ -112,10 +116,51 @@ class TRPGSessionCommand(BaseCommand):
 • /r [骰子] - 掷骰子 (如 /r 2d6+3)
 • /pc show - 查看角色卡
 • /inv - 查看背包
-• /module list - 查看可用模组
 • /trpg end - 结束跑团""")
         
         return True, "跑团会话已开始", 2
+
+    async def _show_module_selection(self) -> Tuple[bool, str, int]:
+        """显示模组选择列表"""
+        if not _module_loader:
+            await self.send_text("⚠️ 模组系统未初始化")
+            return False, "模组系统未初始化", 0
+        
+        modules = _module_loader.list_available_modules()
+        
+        genre_names = {
+            "fantasy": "🗡️ 奇幻",
+            "horror": "👻 恐怖",
+            "scifi": "🚀 科幻",
+            "modern": "🏙️ 现代",
+        }
+        difficulty_icons = {"easy": "🟢", "normal": "🟡", "hard": "🔴"}
+        
+        # 按类型分组
+        by_genre = {}
+        for m in modules:
+            genre = m.get("genre", "其他")
+            if genre not in by_genre:
+                by_genre[genre] = []
+            by_genre[genre].append(m)
+        
+        text = "🎲 请选择一个模组开始跑团：\n"
+        
+        for genre, mods in by_genre.items():
+            genre_display = genre_names.get(genre, f"📁 {genre}")
+            text += f"\n{genre_display}:\n"
+            for m in mods:
+                diff_icon = difficulty_icons.get(m.get("difficulty"), "⚪")
+                player_count = m.get("player_count", "?")
+                text += f"  {diff_icon} {m['name']} ({m['id']}) 👥{player_count}\n"
+        
+        text += "\n📝 用法:\n"
+        text += "• /trpg start [模组ID] - 使用预设模组\n"
+        text += "• /trpg start [自定义世界观] - 自由模式\n"
+        text += "\n💡 推荐新手使用 /trpg start solo_mystery 单人测试"
+        
+        await self.send_text(text)
+        return True, None, 2
 
     async def _end_session(self, stream_id: str) -> Tuple[bool, str, int]:
         """结束会话"""
@@ -618,14 +663,16 @@ class ModuleCommand(BaseCommand):
             "scifi": "🚀 科幻",
             "modern": "🏙️ 现代",
         }
+        difficulty_icons = {"easy": "🟢", "normal": "🟡", "hard": "🔴"}
         
         text = "📚 可用模组列表:\n"
         for genre, mods in by_genre.items():
             genre_display = genre_names.get(genre, f"📁 {genre}")
             text += f"\n{genre_display}:\n"
             for m in mods:
-                difficulty_icon = {"easy": "🟢", "normal": "🟡", "hard": "🔴"}.get(m.get("difficulty"), "⚪")
-                text += f"  {difficulty_icon} {m['name']} ({m['id']})\n"
+                diff_icon = difficulty_icons.get(m.get("difficulty"), "⚪")
+                player_count = m.get("player_count", "?")
+                text += f"  {diff_icon} {m['name']} ({m['id']}) 👥{player_count}\n"
         
         text += "\n使用 /module info [模组ID] 查看详情"
         await self.send_text(text)

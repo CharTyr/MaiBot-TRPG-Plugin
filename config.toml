@@ -1,8 +1,9 @@
 # MaiBot TRPG DM 跑团插件配置文件
+# 详细说明请参考 README.md
 
 [plugin]
 # 配置文件版本
-config_version = "1.0.0"
+config_version = "1.1.0"
 # 是否启用插件
 enabled = true
 
@@ -11,10 +12,14 @@ enabled = true
 enabled_groups = []
 # 自动保存间隔（秒）
 auto_save_interval = 300
-# 历史记录最大条数
-max_history_length = 100
+# 历史记录最大条数（影响 AI 上下文长度）
+max_history_length = 50
 # 是否在群组中显示详细日志
 verbose_mode = false
+# 是否允许玩家中途加入
+allow_mid_join = true
+# 中途加入时是否需要 DM 确认（管理员）
+mid_join_require_confirm = false
 
 [dice]
 # 默认骰子面数
@@ -45,14 +50,28 @@ default_time = "day"
 default_weather = "sunny"
 
 [dm]
+# 是否使用 MaiBot 主程序的 replyer 模型（推荐开启）
+use_maibot_replyer = true
 # DM 响应的温度参数（0.0-2.0，越高越有创意）
 llm_temperature = 0.8
 # DM 响应的最大 token 数
-llm_max_tokens = 1000
-# 是否启用自动剧情生成
+llm_max_tokens = 800
+# 是否启用自动剧情生成（关闭则只响应命令）
 auto_narrative = true
-# NPC 对话风格
+# NPC 对话风格: immersive(沉浸式), simple(简洁)
 npc_style = "immersive"
+# DM 人格提示词（简短为佳，会附加到系统提示词）
+dm_personality = "你是一个经验丰富的跑团主持人，擅长营造氛围和推动剧情。"
+# 是否在回复中包含行动建议
+include_action_hints = true
+
+[integration]
+# 跑团模式下是否完全接管消息处理（推荐开启）
+takeover_message = true
+# 接管时是否阻止其他插件处理消息
+block_other_plugins = true
+# 是否使用 MaiBot 的人格设定融合 DM 角色
+merge_bot_personality = true
 
 [permissions]
 # 管理员用户ID列表（可以使用 /dm 命令）
@@ -61,3 +80,13 @@ admin_users = []
 allow_player_edit_attributes = false
 # 是否允许玩家查看其他玩家状态
 allow_view_others = true
+# 是否允许非管理员结束跑团
+allow_player_end_session = false
+
+[module]
+# 自定义模组目录（相对于插件目录）
+custom_module_dir = "data/modules"
+# 是否允许导入 PDF 模组
+allow_pdf_import = true
+# PDF 解析使用的模型（需要支持长文本）
+pdf_parse_model = "utils"
