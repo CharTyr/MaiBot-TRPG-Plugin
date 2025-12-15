@@ -129,23 +129,83 @@ def set_services(storage, dice, dm, loader):
 
 ## 🎯 核心流程
 
-### 1. 消息处理流程
+### 1. 消息处理流程（与 MaiBot 的集成）
 
 ```
-用户消息 → TRPGMessageHandler.execute()
+用户消息 → bot.py
     │
-    ├─ 检查群组是否启用跑团
-    ├─ 检查是否有活跃会话
-    ├─ 检查是否是命令（/开头）→ 交给命令处理器
+    ├─ handle_mai_events(ON_MESSAGE_PRE_PROCESS)
+    ├─ _process_commands() → 处理斜杠命令
     │
-    └─ 角色扮演消息处理：
-        ├─ 判断是否需要 DM 响应
-        ├─ 调用 DMEngine.generate_dm_response()
-        ├─ 记录历史
-        └─ 发送响应
+    ├─ handle_mai_events(ON_MESSAGE)
+    │   │
+    │   └─ TRPGMessageHandler.execute() [weight=1000, intercept_message=True]
+    │       │
+    │       ├─ 非跑团群组/无活跃会话 → return (True, True) → 放行给 MaiBot
+    │       │
+    │       └─ 跑团群组 + 活跃会话：
+    │           ├─ 跑团命令 (/trpg, /r, /join...) → return (True, False) → 阻止 MaiBot
+    │           ├─ 非跑团命令 + takeover=true → return (True, False) → 阻止 MaiBot
+    │           ├─ 角色扮演消息 → 生成 DM 响应 → return (True, False)
+    │           └─ 普通消息 + takeover=true → return (True, False) → 阻止 MaiBot
+    │
+    ├─ if not continue_flag: return  ← 插件返回 False 时，这里直接返回！
+    │
+    └─ heartflow_message_receiver.process_message() ← MaiBot 原本的回复流程（被阻止）
 ```
 
-### 2. DM 响应生成流程
+**关键点**：
+- `weight = 1000`：确保我们的处理器最先执行
+- `intercept_message = True`：阻塞执行，等待返回结果
+- 返回值第二个参数 `continue_processing`：`False` 阻止后续处理，`True` 放行
+
+### 2. 消息拦截配置
+
+```toml
+# config.toml
+[integration]
+takeover_message = true      # 完全接管消息处理
+block_other_plugins = true   # 阻止其他插件
+```
+
+| 场景 | takeover_message | 结果 |
+|------|------------------|------|
+| 跑团群组 + 活跃会话 | true | 所有消息被拦截，MaiBot 不回复 |
+| 跑团群组 + 活跃会话 | false | 仅角色扮演消息触发 DM，其他消息 MaiBot 可能回复 |
+| 非跑团群组 | - | 放行，MaiBot 正常回复 |
+| 无活跃会话 | - | 放行，MaiBot 正常回复 |
+
+### 3. TRPGMessageHandler 详细流程
+
+```
+TRPGMessageHandler.execute(message)
+    │
+    ├─ 前置检查（任一失败则放行）：
+    │   ├─ message 存在？
+    │   ├─ _storage 和 _dm_engine 已初始化？
+    │   ├─ stream_id 存在？
+    │   ├─ 群组已启用跑团？ (_storage.is_group_enabled)
+    │   └─ 有活跃会话？ (session.is_active)
+    │
+    ├─ 命令处理（/开头）：
+    │   ├─ 跑团命令 → return (True, not block_others)
+    │   └─ 非跑团命令 + takeover → return (True, False)
+    │
+    ├─ 角色扮演检测：
+    │   ├─ *动作* / （动作）/ "对话" 格式
+    │   └─ 行动关键词（我要、攻击、查看...）
+    │
+    ├─ DM 响应生成（如果需要）：
+    │   ├─ 记录玩家行动到历史
+    │   ├─ 调用 DMEngine.generate_dm_response()
+    │   ├─ 记录 DM 响应到历史
+    │   └─ 发送响应
+    │
+    └─ 最终返回：
+        └─ takeover=true → return (True, False) → 阻止 MaiBot
+```
+
+### 4. DM 响应生成流程
 
 ```python
 # services/dm_engine.py
@@ -169,7 +229,7 @@ async def generate_dm_response(self, session, player_message, player, config):
     return response
 ```
 
-### 3. 数据持久化流程
+### 5. 数据持久化流程
 
 ```
 StorageManager
@@ -367,6 +427,59 @@ DM 的核心逻辑在 `services/dm_engine.py`：
 - 基类定义：`src/plugin_system/base/`
 - API 接口：`src/plugin_system/apis/`
 - 参考插件：`plugins/hello_world_plugin/`
+
+---
+
+## 🔒 消息拦截机制详解
+
+### MaiBot 事件系统
+
+MaiBot 使用 `EventsManager` 管理事件处理器：
+
+```python
+# src/plugin_system/core/events_manager.py
+class EventsManager:
+    async def handle_mai_events(self, event_type, message, ...):
+        handlers = self._events_subscribers.get(event_type, [])
+        # 按 weight 降序排列
+        for handler in handlers:
+            if handler.intercept_message:
+                should_continue, modified_message = await handler.execute(message)
+                continue_flag = continue_flag and should_continue
+            else:
+                asyncio.create_task(handler.execute(message))  # 异步执行
+        return continue_flag, modified_message
+```
+
+### 关键属性
+
+| 属性 | 说明 | 我们的设置 |
+|------|------|-----------|
+| `event_type` | 监听的事件类型 | `EventType.ON_MESSAGE` |
+| `weight` | 执行优先级（越高越先） | `1000`（最高） |
+| `intercept_message` | 是否阻塞执行 | `True` |
+
+### 返回值格式
+
+```python
+async def execute(self, message) -> Tuple[bool, bool, str, CustomEventHandlerResult, MaiMessages]:
+    # 返回值：
+    # [0] success: 是否执行成功
+    # [1] continue_processing: 是否继续处理后续处理器和 MaiBot 主流程
+    # [2] return_message: 返回消息（日志用）
+    # [3] custom_result: 自定义结果
+    # [4] modified_message: 修改后的消息
+    
+    return True, False, None, None, None  # 阻止后续处理
+    return True, True, None, None, None   # 放行
+```
+
+### 为什么不会出现双重回复
+
+1. **我们的处理器 weight=1000**，最先执行
+2. **返回 `continue_processing=False`** 时，`continue_flag` 变为 `False`
+3. **bot.py 检查 `if not continue_flag: return`**，直接返回
+4. **MaiBot 的 `heartflow_message_receiver.process_message()` 不会执行**
 
 ---
 
