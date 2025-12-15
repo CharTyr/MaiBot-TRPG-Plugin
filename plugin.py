@@ -100,7 +100,7 @@ class TRPGDMPlugin(BasePlugin):
     # 配置 Schema 定义
     config_schema: dict = {
         "plugin": {
-            "config_version": ConfigField(type=str, default="1.0.0", description="配置文件版本"),
+            "config_version": ConfigField(type=str, default="1.2.0", description="配置文件版本"),
             "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
         },
         "session": {

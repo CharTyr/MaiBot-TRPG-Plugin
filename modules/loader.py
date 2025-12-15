@@ -6,12 +6,15 @@ import json
 from pathlib import Path
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
+from src.common.logger import get_logger
 from .base import ModuleBase, ModuleInfo
 from .presets import PRESET_MODULES, get_module_list, create_module as create_preset_module
 
 if TYPE_CHECKING:
     from ..models.session import TRPGSession
     from ..models.storage import StorageManager
+
+logger = get_logger("trpg_module_loader")
 
 
 class ModuleLoader:
@@ -99,7 +102,7 @@ class ModuleLoader:
             return module
             
         except Exception as e:
-            print(f"加载模组失败: {e}")
+            logger.error(f"加载模组失败: {e}")
             return None
 
     def save_custom_module(self, module: ModuleBase) -> bool:
@@ -110,7 +113,7 @@ class ModuleLoader:
                 json.dump(module.to_dict(), f, ensure_ascii=False, indent=2)
             return True
         except Exception as e:
-            print(f"保存模组失败: {e}")
+            logger.error(f"保存模组失败: {e}")
             return False
 
     async def apply_module_to_session(
@@ -153,7 +156,7 @@ class ModuleLoader:
             return True
             
         except Exception as e:
-            print(f"应用模组失败: {e}")
+            logger.error(f"应用模组失败: {e}")
             return False
 
     def get_module_info(self, module_id: str) -> Optional[Dict[str, Any]]:

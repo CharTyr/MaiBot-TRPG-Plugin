@@ -110,7 +110,7 @@ def create_module() -> ModuleBase:
                 dialogue_style="声音冰冷机械，逻辑严密，会尝试与入侵者对话以拖延时间",
                 secrets=["它其实是普罗米修斯的前身，一个不完整的AI"],
             ),
-            "�的田中": NPCTemplate(
+            "铁田中": NPCTemplate(
                 name="铁田中",
                 description="神罗安保部队的队长，全身义体化的战斗机器",
                 location="安保中心",
