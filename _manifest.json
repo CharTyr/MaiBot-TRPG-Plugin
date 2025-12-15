@@ -1,0 +1,84 @@
+{
+  "manifest_version": 1,
+  "name": "MaiBot TRPG DM 跑团插件",
+  "version": "1.0.0",
+  "description": "将 MaiBot 变成专业的 TRPG 跑团 DM，支持骰子、玩家管理、世界观设定、剧情生成等功能",
+  "author": {
+    "name": "MaiBot Plugin Developer",
+    "url": "https://github.com/MaiM-with-u"
+  },
+  "license": "GPL-v3.0-or-later",
+  "host_application": {
+    "min_version": "0.8.0"
+  },
+  "homepage_url": "https://github.com/MaiM-with-u/maibot",
+  "repository_url": "https://github.com/MaiM-with-u/maibot",
+  "keywords": [
+    "trpg",
+    "dnd",
+    "coc",
+    "跑团",
+    "骰子",
+    "dm",
+    "roleplay",
+    "game"
+  ],
+  "categories": [
+    "Game",
+    "Roleplay",
+    "Entertainment"
+  ],
+  "default_locale": "zh-CN",
+  "plugin_info": {
+    "is_built_in": false,
+    "plugin_type": "trpg",
+    "components": [
+      {
+        "type": "command",
+        "name": "trpg_session",
+        "description": "跑团会话管理命令",
+        "pattern": "/trpg"
+      },
+      {
+        "type": "command",
+        "name": "dice_roll",
+        "description": "骰子投掷命令",
+        "pattern": "/r"
+      },
+      {
+        "type": "command",
+        "name": "player_manage",
+        "description": "玩家角色管理命令",
+        "pattern": "/pc"
+      },
+      {
+        "type": "command",
+        "name": "inventory",
+        "description": "背包管理命令",
+        "pattern": "/inv"
+      },
+      {
+        "type": "event_handler",
+        "name": "trpg_message_handler",
+        "description": "跑团消息处理器"
+      },
+      {
+        "type": "tool",
+        "name": "roll_dice",
+        "description": "骰子工具供LLM使用"
+      }
+    ],
+    "features": [
+      "骰子系统 (支持 XdY+Z 格式)",
+      "玩家角色管理",
+      "背包物品系统",
+      "世界状态管理",
+      "剧情生成",
+      "NPC 扮演",
+      "数据持久化",
+      "群组隔离",
+      "存档系统"
+    ]
+  },
+  "id": "MaiBot.TRPG_DM"
+}
