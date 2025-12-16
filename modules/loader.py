@@ -23,6 +23,37 @@ class ModuleLoader:
     def __init__(self, modules_dir: Optional[Path] = None):
         self.modules_dir = modules_dir or Path(__file__).parent / "custom"
         self.modules_dir.mkdir(parents=True, exist_ok=True)
+        # Markdown 自定义模组目录
+        self.custom_modules_dir = Path(__file__).parent.parent / "custom_modules"
+        self.custom_modules_dir.mkdir(parents=True, exist_ok=True)
+        # 扫描并导入 Markdown 模组
+        self._scan_markdown_modules()
+
+    def _scan_markdown_modules(self):
+        """扫描并导入 Markdown 模组"""
+        from ..services.markdown_parser import import_markdown_module
+        
+        for md_file in self.custom_modules_dir.glob("*.md"):
+            # 跳过模板和说明文件
+            if md_file.name.startswith("_") or md_file.name == "README.md":
+                continue
+            # 检查是否已导入（对应 JSON 存在）
+            json_file = self.modules_dir / f"{md_file.stem}.json"
+            if json_file.exists():
+                # 检查 Markdown 是否更新
+                if md_file.stat().st_mtime <= json_file.stat().st_mtime:
+                    continue
+            # 导入 Markdown 模组
+            try:
+                module_id = import_markdown_module(str(md_file), self.modules_dir)
+                if module_id:
+                    logger.info(f"[ModuleLoader] 已导入 Markdown 模组: {md_file.name} -> {module_id}")
+            except Exception as e:
+                logger.error(f"[ModuleLoader] 导入 Markdown 模组失败 {md_file.name}: {e}")
+
+    def refresh_modules(self):
+        """刷新模组列表，重新扫描 Markdown 模组"""
+        self._scan_markdown_modules()
 
     def list_available_modules(self) -> List[Dict[str, Any]]:
         """列出所有可用的模组"""
@@ -31,7 +62,7 @@ class ModuleLoader:
         # 添加预设模组
         modules.extend(get_module_list())
         
-        # 添加自定义模组
+        # 添加自定义模组（JSON）
         for module_file in self.modules_dir.glob("*.json"):
             try:
                 with open(module_file, "r", encoding="utf-8") as f:
@@ -42,6 +73,7 @@ class ModuleLoader:
                         "name": info.get("name", module_file.stem),
                         "genre": info.get("genre", "unknown"),
                         "difficulty": info.get("difficulty", "normal"),
+                        "player_count": info.get("player_count", "?"),
                         "custom": True,
                     })
             except Exception:

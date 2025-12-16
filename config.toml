@@ -93,6 +93,10 @@ allow_player_end_session = false
 [module]
 # 自定义模组目录（相对于插件目录）
 custom_module_dir = "data/modules"
+# Markdown 模组目录（相对于插件目录）
+markdown_module_dir = "custom_modules"
+# 是否自动扫描 Markdown 模组
+auto_scan_markdown = true
 # 是否允许导入 PDF 模组
 allow_pdf_import = true
 # PDF 解析使用的模型（需要支持长文本）

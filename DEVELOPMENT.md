@@ -42,6 +42,7 @@ MaiBot_TRPG_DM/
 │   ├── dice.py            # 骰子服务
 │   ├── dm_engine.py       # DM 引擎（LLM 调用）
 │   ├── pdf_parser.py      # PDF 模组解析
+│   ├── markdown_parser.py # Markdown 模组解析（推荐）
 │   └── image_generator.py # 场景图片生成（可选）
 │
 ├── models/                # 数据模型
@@ -52,16 +53,21 @@ MaiBot_TRPG_DM/
 ├── modules/               # 模组系统
 │   ├── base.py            # 模组基类定义
 │   ├── loader.py          # 模组加载器
+│   ├── custom/            # 导入后的 JSON 模组
 │   └── presets/           # 预设模组
 │       ├── solo_mystery.py      # 独行侦探（单人测试）
 │       ├── dragon_cave.py       # 龙穴探险（奇幻）
 │       ├── haunted_mansion.py   # 幽灵庄园（恐怖）
 │       └── cyberpunk_heist.py   # 霓虹暗影（赛博朋克）
 │
+├── custom_modules/        # Markdown 自定义模组目录
+│   ├── _template.md       # 模组模板文件
+│   └── *.md               # 用户自定义模组
+│
 └── data/                  # 运行时数据（git 忽略）
     ├── sessions/          # 会话存档
     ├── players/           # 玩家数据
-    └── modules/           # 自定义模组
+    └── modules/           # 自定义模组（JSON）
 ```
 
 ---
@@ -346,6 +352,66 @@ PRESET_MODULES = {
     # ...
 }
 ```
+
+### 添加自定义 Markdown 模组
+
+最简单的方式是使用 Markdown 格式创建模组：
+
+1. 在 `custom_modules/` 目录创建 `.md` 文件
+2. 使用 YAML front matter 定义模组元信息
+3. 使用标准章节格式编写内容
+4. 插件启动时会自动扫描并导入
+
+```markdown
+---
+id: my_adventure
+name: 我的冒险
+genre: fantasy
+difficulty: normal
+player_count: 2-4
+---
+
+# 我的冒险模组
+
+## 简介
+模组描述...
+
+## 世界观背景
+世界设定...
+
+## 开场白
+开场文本...
+
+## NPC
+### NPC名称
+NPC描述...
+
+## 地点
+### 地点名称
+地点描述...
+
+## 物品
+- 物品名：描述
+
+## 结局
+### 结局名称
+结局描述...
+```
+
+**支持的章节关键词**：
+- 简介/介绍/概述 → `info.description` + `world_background`
+- 世界观/背景/设定 → `world_background` + `lore`
+- 开场/序幕/引子 → `intro_text`
+- NPC/角色/人物 → `npcs`
+- 地点/场景/location → `locations`
+- 物品/道具/item → `key_items`
+- 结局/ending → `endings`
+- DM/主持/提示 → `dm_notes`
+- 剧情/钩子/hook → `plot_hooks`
+
+**模板文件**：参考 `custom_modules/_template.md`
+
+**解析器**：`services/markdown_parser.py` 中的 `MarkdownModuleParser`
 
 ### 修改 DM 行为
 

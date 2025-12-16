@@ -751,40 +751,51 @@ class ModuleCommand(BaseCommand):
         """显示模组导入说明"""
         await self.send_text("""📥 导入自定义模组
 
-支持两种方式导入模组：
+✨ 推荐方式：Markdown 格式
 
-1️⃣ JSON 格式（推荐）
-将模组 JSON 文件放入插件目录：
-`plugins/MaiBot_TRPG_DM/data/modules/`
+将 .md 文件放入插件目录：
+`plugins/MaiBot_TRPG_DM/custom_modules/`
 
-JSON 格式参考预设模组结构。
+插件会自动扫描并导入 Markdown 模组！
 
-2️⃣ PDF 模组导入
-需要安装 PDF 解析库（任选其一）：
-• pip install PyMuPDF
-• pip install pdfplumber
-• pip install PyPDF2
+📝 Markdown 模组格式示例：
+```markdown
+---
+id: my_adventure
+name: 我的冒险
+genre: fantasy
+difficulty: normal
+player_count: 2-4
+author: 你的名字
+---
 
-然后将 PDF 文件放入：
-`plugins/MaiBot_TRPG_DM/data/pdf_import/`
+# 我的冒险模组
 
-使用管理命令导入（需要服务器端操作）。
+## 简介
+这是一个奇幻冒险模组...
 
-📝 模组 JSON 基本结构：
-```json
-{
-  "info": {
-    "id": "my_module",
-    "name": "我的模组",
-    "genre": "fantasy",
-    "difficulty": "normal",
-    "player_count": "2-4"
-  },
-  "world_name": "世界名称",
-  "intro_text": "开场白...",
-  "lore": ["设定1", "设定2"]
-}
+## 世界观背景
+在遥远的大陆上...
+
+## 开场白
+冒险者们来到了一个神秘的村庄...
+
+## NPC
+### 村长老王
+一位和蔼的老人，知道很多秘密。
+
+## 地点
+### 神秘森林
+阴暗的森林，据说有怪物出没。
+
+## 物品
+- 古老钥匙：打开地下室的钥匙
+- 治疗药水：恢复 10 点 HP
 ```
+
+📁 其他支持格式：
+• JSON 文件 → `modules/custom/`
+• PDF 文件 → 需要安装解析库
 
 详细格式请参考 README.md""")
         return True, None, 2
