@@ -1,0 +1,21 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Runtime data
+data/sessions/
+data/players/
+data/save_slots/
+data/config/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
