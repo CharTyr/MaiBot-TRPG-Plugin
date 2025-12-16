@@ -50,12 +50,15 @@ class DMEngine:
         try:
             # 获取模型配置
             models = llm_api.get_available_models()
+            if not models:
+                logger.error("[DMEngine] 没有可用的 LLM 模型")
+                return self._get_fallback_response(player_message)
             
             # 优先使用 replyer 模型（与 MaiBot 主程序一致）
             if self.use_maibot_replyer:
-                model_config = models.get("replyer") or models.get("normal_chat") or list(models.values())[0]
+                model_config = models.get("replyer") or models.get("normal_chat") or next(iter(models.values()))
             else:
-                model_config = models.get("normal_chat") or models.get("utils") or list(models.values())[0]
+                model_config = models.get("normal_chat") or models.get("utils") or next(iter(models.values()))
             
             success, response, reasoning, model_name = await llm_api.generate_with_model(
                 prompt=prompt,
@@ -179,7 +182,9 @@ HP: {player.hp_current}/{player.hp_max} | MP: {player.mp_current}/{player.mp_max
 
         try:
             models = llm_api.get_available_models()
-            model_config = models.get("replyer") or models.get("normal_chat") or list(models.values())[0]
+            if not models:
+                return f"【{npc_name}】..."
+            model_config = models.get("replyer") or models.get("normal_chat") or next(iter(models.values()))
             
             success, response, _, _ = await llm_api.generate_with_model(
                 prompt=prompt,
@@ -211,7 +216,9 @@ HP: {player.hp_current}/{player.hp_max} | MP: {player.mp_current}/{player.mp_max
 
         try:
             models = llm_api.get_available_models()
-            model_config = models.get("normal_chat") or list(models.values())[0]
+            if not models:
+                return f"🌍 {world.get_description()}"
+            model_config = models.get("normal_chat") or next(iter(models.values()))
             
             success, response, _, _ = await llm_api.generate_with_model(
                 prompt=prompt,
@@ -243,7 +250,9 @@ HP: {player.hp_current}/{player.hp_max} | MP: {player.mp_current}/{player.mp_max
 
         try:
             models = llm_api.get_available_models()
-            model_config = models.get("normal_chat") or list(models.values())[0]
+            if not models:
+                return f"欢迎来到{session.world_name}！冒险即将开始..."
+            model_config = models.get("normal_chat") or next(iter(models.values()))
             
             success, response, _, _ = await llm_api.generate_with_model(
                 prompt=prompt,

@@ -374,7 +374,8 @@ class InventoryCommand(BaseCommand):
     
     command_name = "inventory"
     command_description = "背包管理"
-    command_pattern = r"^/inv(?:\s+(add|remove|use))?(?:\s+(.+?))?(?:\s+(\d+))?$"
+    # 改进的正则：物品名不能以数字结尾（数字会被当作数量）
+    command_pattern = r"^/inv(?:\s+(add|remove|use))?(?:\s+(.+?))?$"
 
     async def execute(self) -> Tuple[bool, Optional[str], int]:
         if not _storage:
@@ -384,8 +385,16 @@ class InventoryCommand(BaseCommand):
         user_id = str(self.message.message_info.user_info.user_id)
         
         action = self.matched_groups.get("1", "")
-        item_name = self.matched_groups.get("2", "").strip()
-        quantity = int(self.matched_groups.get("3", "1") or "1")
+        raw_args = self.matched_groups.get("2", "").strip()
+        
+        # 解析物品名和数量：最后一个空格分隔的数字作为数量
+        item_name = raw_args
+        quantity = 1
+        if raw_args:
+            parts = raw_args.rsplit(None, 1)  # 从右边分割一次
+            if len(parts) == 2 and parts[1].isdigit():
+                item_name = parts[0]
+                quantity = int(parts[1])
         
         player = await _storage.get_player(stream_id, user_id)
         if not player:

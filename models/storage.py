@@ -5,7 +5,7 @@
 import json
 import asyncio
 from pathlib import Path
-from typing import Dict, Optional, List, Any
+from typing import Dict, Optional, List, Any, Tuple
 from .session import TRPGSession
 from .player import Player
 
@@ -427,7 +427,3 @@ class StorageManager:
                 await self.save_player(player)
         
         await self._save_enabled_groups()
-
-
-# 为了兼容性，添加 Tuple 导入
-from typing import Tuple
