@@ -31,6 +31,158 @@ class DMEngine:
         self.integration_config = config.get("integration", {})
         self.use_maibot_replyer = self.dm_config.get("use_maibot_replyer", True)
         self.merge_personality = self.integration_config.get("merge_bot_personality", True)
+        
+        # 图片配置
+        self.image_config = config.get("image", {})
+        self.auto_image_enabled = self.image_config.get("auto_generate", False)
+        self.auto_image_interval = self.image_config.get("auto_generate_interval", 10)
+        self.climax_image_enabled = self.image_config.get("climax_auto_image", True)
+        
+        # 高潮关键词（用于检测剧情高潮）
+        self.climax_keywords = [
+            # 战斗高潮
+            "致命一击", "最后一击", "倒下", "死亡", "击败", "胜利", "战斗结束",
+            # 剧情高潮
+            "真相", "揭露", "发现", "震惊", "原来", "终于", "秘密",
+            # 转折
+            "突然", "意外", "惊讶", "不可思议", "转折",
+            # 情感高潮
+            "感动", "泪水", "拥抱", "告别", "重逢",
+            # 危机
+            "危险", "紧急", "爆炸", "崩塌", "逃跑",
+        ]
+
+    def detect_climax(self, dm_response: str, session: "TRPGSession") -> bool:
+        """
+        检测 DM 响应是否包含剧情高潮
+        
+        Returns:
+            True 如果检测到高潮场景
+        """
+        if not self.climax_image_enabled:
+            return False
+        
+        # 检查关键词
+        response_lower = dm_response.lower()
+        keyword_count = sum(1 for kw in self.climax_keywords if kw in response_lower)
+        
+        # 检查张力等级
+        tension = session.story_context.tension_level
+        
+        # 检查距离上次生成图片的历史条数
+        history_since_last_image = len(session.history) - session.story_context.last_image_history_index
+        
+        # 高潮判定条件：
+        # 1. 关键词数量 >= 2
+        # 2. 或者张力等级 >= 7 且有至少1个关键词
+        # 3. 且距离上次图片至少5条历史
+        if history_since_last_image < 5:
+            return False
+        
+        if keyword_count >= 2:
+            logger.info(f"[DMEngine] 检测到剧情高潮（关键词: {keyword_count}）")
+            return True
+        
+        if tension >= 7 and keyword_count >= 1:
+            logger.info(f"[DMEngine] 检测到剧情高潮（张力: {tension}, 关键词: {keyword_count}）")
+            return True
+        
+        return False
+
+    def update_tension_level(self, dm_response: str, session: "TRPGSession"):
+        """根据 DM 响应更新剧情张力等级"""
+        response_lower = dm_response.lower()
+        
+        # 增加张力的关键词
+        tension_up_keywords = ["危险", "紧张", "战斗", "敌人", "威胁", "追逐", "陷阱", "黑暗"]
+        # 降低张力的关键词
+        tension_down_keywords = ["安全", "休息", "平静", "解决", "离开", "结束", "放松"]
+        
+        up_count = sum(1 for kw in tension_up_keywords if kw in response_lower)
+        down_count = sum(1 for kw in tension_down_keywords if kw in response_lower)
+        
+        # 调整张力
+        delta = up_count - down_count
+        new_tension = max(0, min(10, session.story_context.tension_level + delta))
+        session.story_context.tension_level = new_tension
+
+    async def should_update_summary(self, session: "TRPGSession") -> bool:
+        """检查是否需要更新剧情摘要"""
+        history_since_last = len(session.history) - session.story_context.last_summary_history_index
+        # 每10条历史更新一次摘要
+        return history_since_last >= 10
+
+    async def update_story_summary(self, session: "TRPGSession"):
+        """更新剧情摘要"""
+        recent_history = session.get_recent_history(15)
+        if not recent_history:
+            return
+        
+        history_text = "\n".join([
+            f"[{h.entry_type}] {h.content[:100]}" for h in recent_history
+        ])
+        
+        prompt = f"""请根据以下跑团历史记录，生成一段简洁的剧情摘要（100字以内）：
+
+世界观: {session.world_name}
+当前位置: {session.world_state.location}
+
+历史记录:
+{history_text}
+
+要求：
+1. 概括主要事件和进展
+2. 突出关键转折点
+3. 保持客观叙述
+
+只输出摘要，不要其他内容。"""
+
+        try:
+            models = llm_api.get_available_models()
+            if models:
+                model_config = models.get("utils") or models.get("normal_chat") or next(iter(models.values()))
+                success, response, _, _ = await llm_api.generate_with_model(
+                    prompt=prompt,
+                    model_config=model_config,
+                    request_type="trpg.summary",
+                    temperature=0.5,
+                    max_tokens=200,
+                )
+                if success and response:
+                    session.story_context.story_summary = response.strip()
+                    session.story_context.last_summary_history_index = len(session.history)
+                    logger.info("[DMEngine] 剧情摘要已更新")
+        except Exception as e:
+            logger.warning(f"[DMEngine] 更新剧情摘要失败: {e}")
+
+    def get_full_context(self, session: "TRPGSession") -> str:
+        """获取完整的剧情上下文供 LLM 使用"""
+        ctx = session.story_context
+        
+        parts = []
+        
+        # 剧情摘要
+        if ctx.story_summary:
+            parts.append(f"【剧情摘要】\n{ctx.story_summary}")
+        
+        # 关键事件
+        if ctx.key_events:
+            recent_events = ctx.key_events[-5:]
+            parts.append(f"【近期关键事件】\n" + "\n".join(f"• {e}" for e in recent_events))
+        
+        # 未解决的谜题
+        if ctx.open_threads:
+            parts.append(f"【未解之谜】\n" + "\n".join(f"• {t}" for t in ctx.open_threads[:3]))
+        
+        # 已发现线索
+        if ctx.discovered_clues:
+            parts.append(f"【已发现线索】\n" + "\n".join(f"• {c}" for c in ctx.discovered_clues[-5:]))
+        
+        # 当前场景
+        if ctx.current_scene:
+            parts.append(f"【当前场景】{ctx.current_scene}")
+        
+        return "\n\n".join(parts) if parts else ""
 
     async def generate_dm_response(
         self,
@@ -79,6 +231,146 @@ class DMEngine:
             logger.error(f"[DMEngine] 生成 DM 响应时出错: {e}")
             return self._get_fallback_response(player_message)
 
+    async def generate_batch_dm_response(
+        self,
+        session: "TRPGSession",
+        actions: List[Dict[str, Any]],
+        config: Optional[Dict] = None,
+    ) -> str:
+        """
+        生成多人行动的批量 DM 响应
+        
+        Args:
+            session: 跑团会话
+            actions: 行动列表 [{user_id, character_name, action, timestamp}]
+            config: 配置
+            
+        Returns:
+            统一的 DM 响应
+        """
+        # 构建多人行动提示词
+        prompt = self._build_batch_dm_prompt(session, actions)
+        
+        try:
+            models = llm_api.get_available_models()
+            if not models:
+                logger.error("[DMEngine] 没有可用的 LLM 模型")
+                return self._get_batch_fallback_response(actions)
+            
+            if self.use_maibot_replyer:
+                model_config = models.get("replyer") or models.get("normal_chat") or next(iter(models.values()))
+            else:
+                model_config = models.get("normal_chat") or next(iter(models.values()))
+            
+            # 多人响应需要更多 token
+            batch_max_tokens = min(self.max_tokens * 2, 1500)
+            
+            success, response, reasoning, model_name = await llm_api.generate_with_model(
+                prompt=prompt,
+                model_config=model_config,
+                request_type="trpg.batch_dm_response",
+                temperature=self.temperature,
+                max_tokens=batch_max_tokens,
+            )
+            
+            if success and response:
+                logger.debug(f"[DMEngine] 批量 DM 响应生成成功，使用模型: {model_name}")
+                return self._format_batch_response(response.strip(), session, actions)
+            else:
+                logger.warning(f"[DMEngine] 批量 DM 响应生成失败: {response}")
+                return self._get_batch_fallback_response(actions)
+                
+        except Exception as e:
+            logger.error(f"[DMEngine] 生成批量 DM 响应时出错: {e}")
+            return self._get_batch_fallback_response(actions)
+
+    def _build_batch_dm_prompt(
+        self,
+        session: "TRPGSession",
+        actions: List[Dict[str, Any]],
+    ) -> str:
+        """构建多人行动的 DM 提示词"""
+        # 获取最近的历史记录
+        max_history = self.config.get("session", {}).get("max_history_length", 50)
+        recent_history = session.get_recent_history(min(8, max_history))
+        
+        history_text = ""
+        if recent_history:
+            history_lines = []
+            for h in recent_history[-6:]:
+                if h.entry_type == "dm":
+                    history_lines.append(f"[DM]: {h.content[:80]}...")
+                elif h.entry_type == "player":
+                    name = h.character_name or "玩家"
+                    history_lines.append(f"[{name}]: {h.content[:50]}")
+            history_text = "\n".join(history_lines)
+        
+        # 构建行动列表
+        action_lines = []
+        for act in actions:
+            action_lines.append(f"• {act['character_name']}: {act['action']}")
+        actions_text = "\n".join(action_lines)
+        
+        # 世界状态
+        world = session.world_state
+        world_info = f"位置: {world.location} | 时间: {world.time_of_day} | 天气: {world.weather}"
+        
+        # NPC 信息
+        npc_info = ""
+        if session.npcs:
+            npc_list = [f"{name}({npc.attitude})" for name, npc in list(session.npcs.items())[:5]]
+            npc_info = f"场景NPC: {', '.join(npc_list)}"
+        
+        # DM 人格
+        personality = self.dm_personality or "你是一个专业的跑团主持人。"
+        
+        prompt = f"""【跑团DM系统提示 - 多人回合】
+{personality}
+
+当前正在主持: {session.world_name}
+{world_info}
+{npc_info}
+
+最近的游戏记录:
+{history_text if history_text else "(游戏刚开始)"}
+
+---
+本轮多位玩家同时行动:
+{actions_text}
+---
+
+请作为DM统一回应所有玩家的行动。要求:
+1. 按顺序描述每位玩家行动的结果（每人30-50字）
+2. 描述行动之间的互动和影响
+3. 如果行动有冲突或配合，要体现出来
+4. 保持叙事连贯，像在讲述一个场景
+5. 最后简短描述场景的整体变化
+6. 如需检定，指出哪位玩家需要什么检定
+
+格式示例:
+【角色A】行动结果描述...
+【角色B】行动结果描述...
+📍 场景变化: ..."""
+
+        return prompt
+
+    def _format_batch_response(
+        self, response: str, session: "TRPGSession", actions: List[Dict]
+    ) -> str:
+        """格式化批量响应"""
+        # 添加回合标记
+        player_names = [act["character_name"] for act in actions]
+        header = f"🎭 本轮行动结果 ({', '.join(player_names)})\n\n"
+        return header + response
+
+    def _get_batch_fallback_response(self, actions: List[Dict]) -> str:
+        """获取批量响应的备用响应"""
+        lines = ["🎲 本轮行动处理中...\n"]
+        for act in actions:
+            lines.append(f"• {act['character_name']} 尝试 {act['action'][:20]}...")
+        lines.append("\n请稍等，DM正在思考结果。")
+        return "\n".join(lines)
+
     def _build_dm_prompt(
         self,
         session: "TRPGSession",
@@ -126,8 +418,22 @@ HP: {player.hp_current}/{player.hp_max} | MP: {player.mp_current}/{player.mp_max
         if session.lore:
             lore_text = "世界观要点: " + "; ".join(session.lore[:3])
         
+        # 剧情上下文（增强连贯性）
+        story_context = self.get_full_context(session)
+        
         # DM 人格
         personality = self.dm_personality or "你是一个专业的跑团主持人。"
+        
+        # 分析玩家行动，判断是否需要检定
+        check_hint = self._analyze_action_for_check(player_message)
+        
+        # 张力等级提示
+        tension = session.story_context.tension_level
+        tension_hint = ""
+        if tension >= 7:
+            tension_hint = "\n⚡ 当前剧情张力很高，注意营造紧张氛围！"
+        elif tension <= 2:
+            tension_hint = "\n🌿 当前氛围平静，可以适当推进剧情或埋下伏笔。"
         
         prompt = f"""【跑团DM系统提示】
 {personality}
@@ -137,6 +443,9 @@ HP: {player.hp_current}/{player.hp_max} | MP: {player.mp_current}/{player.mp_max
 {player_info}
 {npc_info}
 {lore_text}
+{tension_hint}
+
+{story_context if story_context else ""}
 
 最近的游戏记录:
 {history_text if history_text else "(游戏刚开始)"}
@@ -145,14 +454,48 @@ HP: {player.hp_current}/{player.hp_max} | MP: {player.mp_current}/{player.mp_max
 玩家行动: {player_message}
 ---
 
+【骰子检定规则】
+以下情况必须要求玩家进行骰子检定：
+- 🔍 调查/搜索/观察 → 感知检定 `/r d20` (DC 10-15)
+- ⚔️ 攻击/战斗 → 攻击检定 `/r d20` + 伤害骰
+- 🗣️ 说服/欺骗/威胁 → 魅力检定 `/r d20` (DC 12-18)
+- 🤸 跳跃/攀爬/躲避 → 敏捷检定 `/r d20` (DC 10-15)
+- 💪 推/拉/破坏 → 力量检定 `/r d20` (DC 12-18)
+- 🧠 回忆/分析/识破 → 智力检定 `/r d20` (DC 10-15)
+- 🎭 隐藏/潜行 → 隐匿检定 `/r d20` (DC 12-15)
+- 🔧 开锁/拆卸/修理 → 巧手检定 `/r d20` (DC 12-18)
+{check_hint}
+
 请作为DM回应玩家。要求:
-1. 描述行动结果和场景变化（50-100字）
-2. 如果涉及NPC，简短描述其反应
-3. 保持沉浸感，使用第三人称
-4. 如需检定，说明需要什么检定（如"请进行感知检定 /r d20"）
-5. 不要过度描述，保持简洁有力"""
+1. 先简短描述玩家开始行动的场景（1-2句）
+2. 如果行动有不确定性，必须要求骰子检定，格式：「🎲 请进行XX检定 `/r d20`，DC XX」
+3. 如果玩家刚刚进行了检定（历史记录中有骰子结果），根据结果描述成功或失败
+4. 保持沉浸感，使用第三人称
+5. 不要过度描述，保持简洁（50-100字）"""
 
         return prompt
+
+    def _analyze_action_for_check(self, message: str) -> str:
+        """分析玩家行动，返回建议的检定类型"""
+        message_lower = message.lower()
+        
+        # 检定类型映射
+        check_mappings = [
+            (["搜索", "调查", "检查", "查看", "观察", "寻找", "翻找"], "→ 建议: 感知检定"),
+            (["攻击", "打", "砍", "刺", "射", "战斗", "挥"], "→ 建议: 攻击检定"),
+            (["说服", "劝说", "欺骗", "撒谎", "威胁", "恐吓", "谈判"], "→ 建议: 魅力检定"),
+            (["跳", "爬", "翻", "躲", "闪", "滚"], "→ 建议: 敏捷检定"),
+            (["推", "拉", "举", "砸", "破门", "撞"], "→ 建议: 力量检定"),
+            (["回忆", "分析", "推理", "识破", "辨认"], "→ 建议: 智力检定"),
+            (["潜行", "隐藏", "躲藏", "偷偷", "悄悄"], "→ 建议: 隐匿检定"),
+            (["开锁", "撬", "拆", "修理", "解除"], "→ 建议: 巧手检定"),
+        ]
+        
+        for keywords, suggestion in check_mappings:
+            if any(kw in message_lower for kw in keywords):
+                return f"\n⚠️ 玩家行动分析 {suggestion}"
+        
+        return ""
 
     async def generate_npc_dialogue(
         self,
@@ -325,3 +668,105 @@ HP: {player.hp_current}/{player.hp_max} | MP: {player.mp_current}/{player.mp_max
             return {"intent": "use_item"}
         
         return {"intent": "roleplay", "action": message}
+
+    async def generate_recap(
+        self,
+        session: "TRPGSession",
+        max_history: int = 10,
+    ) -> str:
+        """
+        生成存档加载后的前情回顾
+        
+        Args:
+            session: 跑团会话
+            max_history: 用于生成回顾的最大历史条数
+            
+        Returns:
+            前情回顾文本
+        """
+        # 获取最近的历史记录
+        recent_history = session.get_recent_history(max_history)
+        
+        if not recent_history:
+            # 没有历史记录，返回简单的状态描述
+            world = session.world_state
+            return f"""📖 前情回顾
+
+🌍 世界观: {session.world_name}
+📍 当前位置: {world.location}
+🕐 时间: {world.time_of_day}
+🌤️ 天气: {world.weather}
+
+冒险刚刚开始，一切等待着你去探索..."""
+        
+        # 构建历史摘要
+        history_lines = []
+        for h in recent_history:
+            if h.entry_type == "dm":
+                # DM 叙述，截取关键部分
+                content = h.content[:80] + ("..." if len(h.content) > 80 else "")
+                history_lines.append(f"📜 {content}")
+            elif h.entry_type == "player":
+                name = h.character_name or "玩家"
+                content = h.content[:50] + ("..." if len(h.content) > 50 else "")
+                history_lines.append(f"🎭 {name}: {content}")
+            elif h.entry_type == "system":
+                history_lines.append(f"⚙️ {h.content}")
+        
+        history_text = "\n".join(history_lines[-8:])  # 最多显示8条
+        
+        # 尝试使用 LLM 生成更好的回顾
+        try:
+            models = llm_api.get_available_models()
+            if models:
+                model_config = models.get("normal_chat") or next(iter(models.values()))
+                
+                prompt = f"""请根据以下跑团历史记录，生成一段简洁的前情回顾（50-80字）:
+
+世界观: {session.world_name}
+当前位置: {session.world_state.location}
+
+最近发生的事:
+{history_text}
+
+要求:
+1. 用第三人称叙述
+2. 突出关键剧情点
+3. 营造氛围感
+4. 不要列举，用流畅的叙述"""
+
+                success, response, _, _ = await llm_api.generate_with_model(
+                    prompt=prompt,
+                    model_config=model_config,
+                    request_type="trpg.recap",
+                    temperature=0.7,
+                    max_tokens=200,
+                )
+                
+                if success and response:
+                    world = session.world_state
+                    return f"""📖 前情回顾
+
+{response.strip()}
+
+━━━ 当前状态 ━━━
+📍 位置: {world.location}
+🕐 时间: {world.time_of_day}
+🌤️ 天气: {world.weather}"""
+        
+        except Exception as e:
+            logger.warning(f"[DMEngine] 生成前情回顾失败，使用简单回顾: {e}")
+        
+        # 备用：简单的历史列表
+        world = session.world_state
+        return f"""📖 前情回顾
+
+🌍 {session.world_name}
+
+最近发生的事:
+{history_text}
+
+━━━ 当前状态 ━━━
+📍 位置: {world.location}
+🕐 时间: {world.time_of_day}
+🌤️ 天气: {world.weather}"""

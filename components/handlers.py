@@ -3,7 +3,9 @@ TRPG DM 插件事件处理器
 实现与 MaiBot 主程序的深度融合
 """
 
-from typing import Tuple, Optional, Dict, TYPE_CHECKING
+import asyncio
+import time
+from typing import Tuple, Optional, Dict, List, TYPE_CHECKING
 from src.plugin_system import (
     BaseEventHandler,
     EventType,
@@ -18,10 +20,83 @@ if TYPE_CHECKING:
 
 logger = get_logger("trpg_handlers")
 
+# 重试配置
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_RETRY_DELAY = 1.0  # 秒
+
+# 多人行动收集配置
+DEFAULT_ACTION_COLLECT_WINDOW = 5.0  # 秒，收集行动的时间窗口
+DEFAULT_MIN_ACTIONS_FOR_BATCH = 2    # 触发批量处理的最小行动数
+
 # 全局引用，由插件主类注入
 _storage: Optional["StorageManager"] = None
 _dm_engine: Optional["DMEngine"] = None
 _plugin_config: dict = {}
+
+# 多人行动收集器（按 stream_id 分组）
+_action_collectors: Dict[str, "ActionCollector"] = {}
+
+
+class ActionCollector:
+    """多人行动收集器"""
+    
+    def __init__(self, stream_id: str, window: float = DEFAULT_ACTION_COLLECT_WINDOW):
+        self.stream_id = stream_id
+        self.window = window
+        self.actions: List[Dict] = []  # [{user_id, character_name, action, timestamp}]
+        self.first_action_time: Optional[float] = None
+        self._lock = asyncio.Lock()
+        self._pending_task: Optional[asyncio.Task] = None
+    
+    async def add_action(self, user_id: str, character_name: str, action: str) -> bool:
+        """
+        添加一个行动
+        Returns: True 如果这是第一个行动（需要启动定时器）
+        """
+        import time
+        async with self._lock:
+            now = time.time()
+            
+            # 检查是否是同一玩家的重复行动（去重）
+            for existing in self.actions:
+                if existing["user_id"] == user_id:
+                    # 更新该玩家的行动
+                    existing["action"] = action
+                    existing["timestamp"] = now
+                    return False
+            
+            self.actions.append({
+                "user_id": user_id,
+                "character_name": character_name,
+                "action": action,
+                "timestamp": now,
+            })
+            
+            if self.first_action_time is None:
+                self.first_action_time = now
+                return True
+            return False
+    
+    async def get_and_clear(self) -> List[Dict]:
+        """获取所有收集的行动并清空"""
+        async with self._lock:
+            actions = self.actions.copy()
+            self.actions = []
+            self.first_action_time = None
+            return actions
+    
+    def get_action_count(self) -> int:
+        """获取当前收集的行动数量"""
+        return len(self.actions)
+    
+    def set_pending_task(self, task: asyncio.Task):
+        """设置待处理的定时任务"""
+        self._pending_task = task
+    
+    def cancel_pending_task(self):
+        """取消待处理的定时任务"""
+        if self._pending_task and not self._pending_task.done():
+            self._pending_task.cancel()
 
 
 def set_handler_services(storage: "StorageManager", dm: "DMEngine", config: dict):
@@ -80,8 +155,8 @@ class TRPGMessageHandler(BaseEventHandler):
         
         # 命令消息处理
         if plain_text.startswith("/"):
-            # 检查是否是跑团相关命令
-            trpg_commands = ["/trpg", "/r", "/roll", "/join", "/pc", "/inv", "/hp", "/mp", "/dm", "/lore", "/module", "/save"]
+            # 检查是否是跑团相关命令 - 统一使用 /trpg 前缀，保留 /r 快捷命令
+            trpg_commands = ["/trpg", "/r ", "/roll "]
             is_trpg_command = any(plain_text.startswith(cmd) for cmd in trpg_commands)
             
             integration_config = _plugin_config.get("integration", {})
@@ -140,40 +215,44 @@ class TRPGMessageHandler(BaseEventHandler):
         should_respond = is_roleplay or (player and self._should_dm_respond(plain_text, session))
         
         if should_respond:
-            # 记录玩家行动
             character_name = player.character_name if player else "旁观者"
+            dm_config = _plugin_config.get("dm", {})
+            
+            # 记录玩家行动到历史
             session.add_history(
                 "player",
                 plain_text,
                 user_id=user_id,
                 character_name=character_name,
             )
+            await _storage.save_session(session)
+            
+            # 立即发送动作确认反馈（如果启用）
+            if dm_config.get("show_action_feedback", True):
+                action_ack = self._generate_action_acknowledgment(plain_text, character_name)
+                if action_ack:
+                    await self.send_text(stream_id, action_ack)
             
             # 检查是否启用自动叙述
-            dm_config = _plugin_config.get("dm", {})
             if dm_config.get("auto_narrative", True):
-                try:
-                    # 生成 DM 响应
-                    response = await _dm_engine.generate_dm_response(
-                        session=session,
-                        player_message=plain_text,
-                        player=player,
-                        config=_plugin_config,
+                # 检查多人模式配置
+                multiplayer_config = _plugin_config.get("multiplayer", {})
+                batch_mode = multiplayer_config.get("batch_actions", True)
+                player_count = len(session.player_ids)
+                
+                # 只有多人（>=2）且启用批量模式时才收集行动
+                if batch_mode and player_count >= 2:
+                    await self._handle_multiplayer_action(
+                        stream_id, session, user_id, character_name, plain_text, player
                     )
-                    
-                    # 记录 DM 响应
-                    session.add_history("dm", response)
-                    await _storage.save_session(session)
-                    
-                    # 发送响应
-                    await self.send_text(stream_id, response)
-                    
-                except Exception as e:
-                    logger.error(f"[TRPGHandler] 生成 DM 响应失败: {e}")
-                    await _storage.save_session(session)
+                else:
+                    # 单人模式：立即响应
+                    await self._generate_and_send_dm_response(
+                        stream_id, session, plain_text, player
+                    )
             else:
-                # 仅保存历史
-                await _storage.save_session(session)
+                # 仅保存历史，发送简单确认
+                await self.send_text(stream_id, f"📝 已记录 {character_name} 的行动")
         
         # 根据配置决定是否阻止其他插件处理
         integration_config = _plugin_config.get("integration", {})
@@ -182,6 +261,293 @@ class TRPGMessageHandler(BaseEventHandler):
             return True, False, None, None, None
         
         return True, True, None, None, None
+
+    async def _handle_multiplayer_action(
+        self, stream_id: str, session, user_id: str, 
+        character_name: str, action: str, player
+    ):
+        """处理多人模式下的行动收集"""
+        global _action_collectors
+        
+        multiplayer_config = _plugin_config.get("multiplayer", {})
+        collect_window = multiplayer_config.get("action_collect_window", DEFAULT_ACTION_COLLECT_WINDOW)
+        
+        # 获取或创建行动收集器
+        if stream_id not in _action_collectors:
+            _action_collectors[stream_id] = ActionCollector(stream_id, collect_window)
+        
+        collector = _action_collectors[stream_id]
+        is_first = await collector.add_action(user_id, character_name, action)
+        
+        if is_first:
+            # 第一个行动，启动定时器
+            logger.info(f"[TRPGHandler] 多人模式：开始收集行动，等待 {collect_window} 秒")
+            
+            async def process_after_delay():
+                await asyncio.sleep(collect_window)
+                await self._process_collected_actions(stream_id)
+            
+            task = asyncio.create_task(process_after_delay())
+            collector.set_pending_task(task)
+        else:
+            # 后续行动，通知已收集
+            count = collector.get_action_count()
+            logger.debug(f"[TRPGHandler] 多人模式：已收集 {count} 个行动")
+
+    async def _process_collected_actions(self, stream_id: str):
+        """处理收集到的所有行动"""
+        global _action_collectors
+        
+        if stream_id not in _action_collectors:
+            return
+        
+        collector = _action_collectors[stream_id]
+        actions = await collector.get_and_clear()
+        
+        if not actions:
+            return
+        
+        session = await _storage.get_session(stream_id)
+        if not session or not session.is_active():
+            return
+        
+        logger.info(f"[TRPGHandler] 多人模式：处理 {len(actions)} 个行动")
+        
+        if len(actions) == 1:
+            # 只有一个行动，使用单人模式处理
+            act = actions[0]
+            player = await _storage.get_player(stream_id, act["user_id"])
+            await self._generate_and_send_dm_response(
+                stream_id, session, act["action"], player
+            )
+        else:
+            # 多个行动，生成批量响应
+            await self._generate_batch_dm_response(stream_id, session, actions)
+
+    async def _generate_and_send_dm_response(
+        self, stream_id: str, session, player_message: str, player
+    ):
+        """生成并发送单人 DM 响应（带重试）"""
+        dm_config = _plugin_config.get("dm", {})
+        max_retries = dm_config.get("max_retries", DEFAULT_MAX_RETRIES)
+        retry_delay = dm_config.get("retry_delay", DEFAULT_RETRY_DELAY)
+        
+        response = None
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                response = await _dm_engine.generate_dm_response(
+                    session=session,
+                    player_message=player_message,
+                    player=player,
+                    config=_plugin_config,
+                )
+                if response:
+                    break
+            except Exception as e:
+                last_error = e
+                logger.warning(f"[TRPGHandler] DM 响应生成失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay * (2 ** attempt))
+        
+        if response:
+            session.add_history("dm", response)
+            
+            # 更新张力等级
+            _dm_engine.update_tension_level(response, session)
+            
+            # 检查是否需要更新剧情摘要
+            if await _dm_engine.should_update_summary(session):
+                await _dm_engine.update_story_summary(session)
+            
+            await _storage.save_session(session)
+            await self.send_text(stream_id, response)
+            
+            # 检测高潮场景，自动生成图片
+            await self._check_and_generate_climax_image(stream_id, session, response)
+        else:
+            logger.error(f"[TRPGHandler] DM 响应生成失败，已重试 {max_retries} 次: {last_error}")
+            await self.send_text(stream_id, "⚠️ DM 思考中遇到了问题，请稍后再试...")
+
+    async def _check_and_generate_climax_image(
+        self, stream_id: str, session, dm_response: str
+    ):
+        """检测高潮场景并自动生成图片"""
+        image_config = _plugin_config.get("image", {})
+        
+        # 检查是否启用图片生成
+        if not image_config.get("enabled", False):
+            return
+        
+        # 检查是否启用高潮自动画图
+        if not image_config.get("climax_auto_image", True):
+            return
+        
+        # 检测是否是高潮场景
+        if not _dm_engine.detect_climax(dm_response, session):
+            return
+        
+        logger.info("[TRPGHandler] 检测到剧情高潮，自动生成场景图片")
+        
+        try:
+            from ..services.image_generator import ImageGenerator
+            generator = ImageGenerator(_plugin_config)
+            
+            if not generator.is_enabled():
+                return
+            
+            # 发送提示
+            await self.send_text(stream_id, "🎨 高潮场景！正在生成场景图片...")
+            
+            # 生成图片（planner 会自动选择尺寸）
+            success, result = await generator.generate_scene_image(session, dm_response[:200])
+            
+            if success:
+                await self.send_image_base64(stream_id, result)
+                # 更新上次生成图片的历史索引
+                session.story_context.last_image_history_index = len(session.history)
+                session.story_context.add_key_event(f"[场景图片] {session.world_state.location}")
+                await _storage.save_session(session)
+                logger.info("[TRPGHandler] 高潮场景图片生成成功")
+            else:
+                logger.warning(f"[TRPGHandler] 高潮场景图片生成失败: {result}")
+                
+        except Exception as e:
+            logger.error(f"[TRPGHandler] 自动生成图片失败: {e}")
+
+    async def _generate_batch_dm_response(
+        self, stream_id: str, session, actions: List[Dict]
+    ):
+        """生成多人行动的批量 DM 响应"""
+        dm_config = _plugin_config.get("dm", {})
+        max_retries = dm_config.get("max_retries", DEFAULT_MAX_RETRIES)
+        retry_delay = dm_config.get("retry_delay", DEFAULT_RETRY_DELAY)
+        
+        # 构建多人行动描述
+        action_lines = []
+        for act in actions:
+            action_lines.append(f"【{act['character_name']}】{act['action']}")
+        
+        combined_message = "\n".join(action_lines)
+        
+        # 发送行动汇总
+        await self.send_text(stream_id, f"📋 本轮行动汇总：\n{combined_message}\n\n🎲 DM 正在处理...")
+        
+        response = None
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                response = await _dm_engine.generate_batch_dm_response(
+                    session=session,
+                    actions=actions,
+                    config=_plugin_config,
+                )
+                if response:
+                    break
+            except Exception as e:
+                last_error = e
+                logger.warning(f"[TRPGHandler] 批量 DM 响应生成失败 (尝试 {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay * (2 ** attempt))
+        
+        if response:
+            session.add_history("dm", f"[多人回合]\n{response}")
+            
+            # 更新张力等级
+            _dm_engine.update_tension_level(response, session)
+            
+            # 检查是否需要更新剧情摘要
+            if await _dm_engine.should_update_summary(session):
+                await _dm_engine.update_story_summary(session)
+            
+            await _storage.save_session(session)
+            await self.send_text(stream_id, response)
+            
+            # 检测高潮场景，自动生成图片
+            await self._check_and_generate_climax_image(stream_id, session, response)
+        else:
+            logger.error(f"[TRPGHandler] 批量 DM 响应生成失败: {last_error}")
+            await self.send_text(stream_id, "⚠️ DM 思考中遇到了问题，请稍后再试...")
+
+    def _generate_action_acknowledgment(self, text: str, character_name: str) -> str:
+        """生成动作确认反馈，包含检定提示"""
+        text_lower = text.lower()
+        
+        # 检查动作格式（角色扮演格式）
+        if text.startswith("*") and text.endswith("*"):
+            action = text[1:-1].strip()
+            check_hint = self._get_check_hint(action)
+            return f"🎭 {character_name}: *{action}*{check_hint}"
+        
+        if text.startswith("（") and text.endswith("）"):
+            action = text[1:-1].strip()
+            check_hint = self._get_check_hint(action)
+            return f"🎭 {character_name}: （{action}）{check_hint}"
+        
+        if text.startswith("(") and text.endswith(")"):
+            action = text[1:-1].strip()
+            check_hint = self._get_check_hint(action)
+            return f"🎭 {character_name}: ({action}){check_hint}"
+        
+        # 需要检定的动作类型（带检定提示）
+        check_actions = {
+            ("搜索", "调查", "检查", "查看", "观察", "寻找", "翻找"): ("🔍", "感知检定", "d20"),
+            ("攻击", "战斗", "打", "砍", "刺"): ("⚔️", "攻击检定", "d20"),
+            ("说服", "劝说", "欺骗", "撒谎", "威胁", "恐吓"): ("💬", "魅力检定", "d20"),
+            ("跳", "爬", "翻", "躲", "闪", "滚"): ("🤸", "敏捷检定", "d20"),
+            ("推", "拉", "举", "砸", "破门", "撞"): ("💪", "力量检定", "d20"),
+            ("回忆", "分析", "推理", "识破", "辨认"): ("🧠", "智力检定", "d20"),
+            ("潜行", "隐藏", "躲藏", "偷偷", "悄悄"): ("🫥", "隐匿检定", "d20"),
+            ("开锁", "撬", "拆", "修理", "解除"): ("🔧", "巧手检定", "d20"),
+        }
+        
+        for keywords, (emoji, check_name, dice) in check_actions.items():
+            if any(kw in text_lower for kw in keywords):
+                short_action = text[:25] + ("..." if len(text) > 25 else "")
+                return f"{emoji} {character_name} 尝试: {short_action}\n🎲 需要{check_name} `/r {dice}`"
+        
+        # 不需要检定的简单动作
+        simple_actions = {
+            ("打开", "开门"): "🚪",
+            ("拿", "捡", "获取"): "🤲",
+            ("走向", "前往", "进入", "离开", "移动"): "🚶",
+            ("使用"): "✨",
+            ("逃跑", "逃"): "🏃",
+            ("施法", "魔法"): "🪄",
+            ("说", "问", "告诉", "询问", "回答", "对话"): "💬",
+        }
+        
+        for keywords, emoji in simple_actions.items():
+            if any(kw in text_lower for kw in keywords):
+                short_action = text[:30] + ("..." if len(text) > 30 else "")
+                return f"{emoji} {character_name}: {short_action}"
+        
+        # 默认反馈
+        short_action = text[:30] + ("..." if len(text) > 30 else "")
+        return f"🎲 {character_name}: {short_action}"
+
+    def _get_check_hint(self, action: str) -> str:
+        """根据动作内容返回检定提示"""
+        action_lower = action.lower()
+        
+        check_mappings = [
+            (["搜索", "调查", "检查", "查看", "观察", "寻找"], "感知检定", "d20"),
+            (["攻击", "战斗", "打", "砍", "刺"], "攻击检定", "d20"),
+            (["说服", "劝说", "欺骗", "威胁"], "魅力检定", "d20"),
+            (["跳", "爬", "翻", "躲", "闪"], "敏捷检定", "d20"),
+            (["推", "拉", "举", "砸", "破"], "力量检定", "d20"),
+            (["回忆", "分析", "推理", "识破"], "智力检定", "d20"),
+            (["潜行", "隐藏", "躲藏", "偷偷"], "隐匿检定", "d20"),
+            (["开锁", "撬", "拆", "修理"], "巧手检定", "d20"),
+        ]
+        
+        for keywords, check_name, dice in check_mappings:
+            if any(kw in action_lower for kw in keywords):
+                return f"\n🎲 需要{check_name} `/r {dice}`"
+        
+        return ""
 
     def _is_roleplay_message(self, text: str) -> bool:
         """判断是否是角色扮演消息"""

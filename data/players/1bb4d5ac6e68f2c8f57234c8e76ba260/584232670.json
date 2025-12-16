@@ -1,0 +1,25 @@
+{
+  "user_id": "584232670",
+  "stream_id": "1bb4d5ac6e68f2c8f57234c8e76ba260",
+  "character_name": "久远",
+  "attributes": {
+    "strength": 50,
+    "dexterity": 10,
+    "constitution": 1000,
+    "intelligence": 10,
+    "wisdom": 10,
+    "charisma": 100000
+  },
+  "hp_current": 20,
+  "hp_max": 20,
+  "mp_current": 10,
+  "mp_max": 10,
+  "level": 1,
+  "experience": 0,
+  "inventory": [],
+  "skills": [],
+  "notes": "",
+  "created_at": 1765896433.984665,
+  "updated_at": 1765896433.9846659,
+  "custom_data": {}
+}

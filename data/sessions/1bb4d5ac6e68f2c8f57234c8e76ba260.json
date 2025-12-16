@@ -1,0 +1,104 @@
+{
+  "stream_id": "1bb4d5ac6e68f2c8f57234c8e76ba260",
+  "status": "active",
+  "world_name": "龙穴探险",
+  "created_at": 1765896408.3037117,
+  "updated_at": 1765896488.735945,
+  "world_state": {
+    "time_of_day": "day",
+    "weather": "sunny",
+    "location": "龙穴入口",
+    "location_description": "\n在艾尔德兰大陆的东方，矗立着一座被称为\"孤峰\"的巨山。\n\n传说一百年前，一头名为斯莫格的红龙袭击了繁华的河谷镇，\n将整座城镇化为灰烬，并将所有财宝掠夺一空，带回了它在孤峰的巢穴。\n\n从那以后，再也没有人敢接近孤峰。\n\n但最近，一位老矮人带来了消息：斯莫格已经陷入了龙族特有的百年沉睡。\n这是取回宝藏的绝佳机会！\n\n河谷镇的幸存者后裔们凑齐了一笔赏金，悬赏勇敢的冒险者前往龙穴，\n取回他们祖先的传家宝——月光宝石项链。\n\n当然，如果你们能顺便带回一些其他宝藏，那也是你们应得的报酬...\n",
+    "custom_states": {}
+  },
+  "history": [
+    {
+      "entry_type": "system",
+      "content": "模组加载: 龙穴探险",
+      "timestamp": 1765896408.3042996,
+      "user_id": null,
+      "character_name": null,
+      "extra_data": {}
+    },
+    {
+      "entry_type": "dm",
+      "content": "\n📖 龙穴探险\n\n清晨的阳光照耀着你们的营地，孤峰的轮廓在晨雾中若隐若现。\n\n经过三天的跋涉，你们终于来到了传说中的龙穴入口——\n一个巨大的洞口，足以让一头成年巨龙自由进出。\n\n洞口周围散落着巨大的骨骸，有些看起来像是牛羊，\n但也有一些...明显是人类的。\n\n一股温热的气流从洞穴深处涌出，带着硫磺的气味。\n\n老矮人巴林站在你们身旁，捋着他的白胡子说道：\n\"就是这里了，年轻人们。记住，龙在沉睡，但它的仆从可能还醒着。\n小心那些哥布林，还有...如果你们听到龙的鼾声变了，就赶紧跑。\"\n\n他递给你们一张泛黄的地图：\"这是我年轻时画的，希望还能用。祝你们好运！\"\n\n冒险开始了。你们准备好进入龙穴了吗？\n",
+      "timestamp": 1765896408.3043082,
+      "user_id": null,
+      "character_name": null,
+      "extra_data": {}
+    },
+    {
+      "entry_type": "system",
+      "content": "久远 加入了冒险",
+      "timestamp": 1765896433.9858854,
+      "user_id": "584232670",
+      "character_name": null,
+      "extra_data": {}
+    },
+    {
+      "entry_type": "system",
+      "content": "Eric 加入了冒险",
+      "timestamp": 1765896488.7359412,
+      "user_id": "355864328",
+      "character_name": null,
+      "extra_data": {}
+    }
+  ],
+  "npcs": {
+    "巴林": {
+      "name": "巴林",
+      "status": "normal",
+      "location": "龙穴入口",
+      "attitude": "friendly",
+      "description": "一位年迈的矮人，白发白须，曾经是著名的冒险者，现在是河谷镇的顾问",
+      "notes": ""
+    },
+    "哥布林首领格里克": {
+      "name": "哥布林首领格里克",
+      "status": "normal",
+      "location": "哥布林营地",
+      "attitude": "hostile",
+      "description": "一只比普通哥布林高大的哥布林，戴着用龙鳞制成的头盔",
+      "notes": ""
+    },
+    "被囚禁的精灵": {
+      "name": "艾拉",
+      "status": "normal",
+      "location": "哥布林营地",
+      "attitude": "friendly",
+      "description": "一位年轻的精灵女性，被哥布林囚禁，衣衫褴褛但眼神坚定",
+      "notes": ""
+    },
+    "沉睡的斯莫格": {
+      "name": "斯莫格",
+      "status": "normal",
+      "location": "宝藏大厅",
+      "attitude": "hostile",
+      "description": "一头巨大的红龙，鳞片如烈焰般赤红，即使沉睡也散发着可怕的威压",
+      "notes": ""
+    }
+  },
+  "lore": [
+    "斯莫格是一头古老的红龙，据说已经活了超过五百年",
+    "龙穴的入口被斯莫格用魔法封印，但沉睡时封印会减弱",
+    "传说龙穴中不只有宝藏，还有斯莫格收集的魔法物品",
+    "孤峰山中还住着一群哥布林，它们崇拜斯莫格为神",
+    "月光宝石项链是精灵女王赠予河谷镇领主的礼物，具有魔法力量"
+  ],
+  "player_ids": [
+    "584232670",
+    "355864328"
+  ],
+  "story_context": {
+    "current_chapter": "",
+    "current_scene": "",
+    "story_summary": "",
+    "key_events": [],
+    "open_threads": [],
+    "discovered_clues": [],
+    "tension_level": 3,
+    "last_image_history_index": 0,
+    "last_summary_history_index": 0
+  }
+}

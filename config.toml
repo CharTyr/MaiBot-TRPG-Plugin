@@ -71,6 +71,12 @@ npc_style = "immersive"
 dm_personality = "你是一个经验丰富的跑团主持人，擅长营造氛围和推动剧情。"
 # 是否在回复中包含行动建议
 include_action_hints = true
+# 是否在玩家行动时立即发送确认反馈（推荐开启，让玩家知道动作已被接收）
+show_action_feedback = true
+# DM 响应生成失败时的最大重试次数
+max_retries = 3
+# 重试间隔基础时间（秒），实际等待时间会使用指数退避
+retry_delay = 1.0
 
 [integration]
 # 跑团模式下是否完全接管消息处理（推荐开启）
@@ -79,6 +85,14 @@ takeover_message = true
 block_other_plugins = true
 # 是否使用 MaiBot 的人格设定融合 DM 角色
 merge_bot_personality = true
+
+[multiplayer]
+# 是否启用多人行动批量处理（多人模组推荐开启）
+batch_actions = true
+# 行动收集时间窗口（秒），在此时间内的行动会被合并处理
+action_collect_window = 5.0
+# 收集窗口结束后的额外等待时间（秒），给慢手玩家更多时间
+extra_wait_time = 2.0
 
 [permissions]
 # 管理员用户ID列表（可以使用 /dm 命令），格式：["123456", "654321"]
@@ -106,26 +120,82 @@ pdf_parse_model = "utils"
 # 是否启用场景图片生成
 enabled = false
 # 生图 API 类型：openai, gradio, sd_api, novelai
-api_type = "openai"
-# API 基础 URL
-base_url = ""
-# API 密钥
-api_key = ""
+api_type = "sd_api"
+# API 基础 URL（sd_api 示例: http://127.0.0.1:7860）
+base_url = "https://sd.exacg.cc"
+# API 密钥（sd_api 可留空，openai/novelai 必填）
+api_key = "sk-IJL68bU21d2UbV8HQQ2ExcLg5BkbvVP7BtS_6G4nivg"
 # 模型名称（OpenAI 格式需要）
 model_name = ""
 # 默认图片尺寸预设：portrait(竖版768x1024), landscape(横版1024x768), wide(宽幅1024x512)
+# 注意：planner 会根据场景自动选择最合适的尺寸（角色特写用portrait，场景用landscape，全景用wide）
 default_size_preset = "landscape"
-# 自定义尺寸（优先于预设）
+# 自定义尺寸（优先于预设，设为0则使用预设或planner推荐）
 custom_width = 0
 custom_height = 0
 # 是否自动在关键剧情点生成图片
 auto_generate = false
 # 自动生成的触发间隔（条消息）
 auto_generate_interval = 10
-# 场景图片提示词前缀
+# 是否在剧情高潮时自动生成图片（推荐开启，会检测战斗胜利、真相揭露等关键时刻）
+climax_auto_image = true
+# 高潮检测的最小间隔（历史条数，避免频繁生成图片）
+climax_min_interval = 5
+# 场景图片提示词前缀（会自动添加到生成的提示词前面）
 prompt_prefix = "fantasy illustration, detailed background, "
 # 角色立绘提示词前缀
 character_prompt_prefix = "character portrait, detailed, "
+
+# ===== SD API 专用配置（参考 API 文档）=====
+[image.sd_api]
+# 负面提示词 negative_prompt (string, 默认"")
+negative_prompt = "lowres, {bad}, error, fewer, extra, missing, worst quality, jpeg artifacts, bad quality, watermark, unfinished, displeasing, chromatic aberration, signature, extra digits, artistic error, username, scan, [abstract]"
+# 图像宽度 width (integer, 64-2048, 默认512)，设为0则使用 default_size_preset
+width = 0
+# 图像高度 height (integer, 64-2048, 默认512)，设为0则使用 default_size_preset
+height = 0
+# 生成步数 steps (integer, 1-50, 默认20)
+steps = 8
+# CFG 引导强度 cfg (float, 1-10, 默认7.0)
+cfg = 7.0
+# 模型索引 model_index (integer, 默认0)，参考 API 返回的模型列表
+model_index = 5
+# 随机种子 seed (integer, 默认-1)，-1为随机
+seed = -1
+# 请求超时时间（秒）
+timeout = 120
+
+# ===== Gradio API 专用配置 =====
+[image.gradio]
+# 图片分辨率（格式如 "1024x1024 ( 1:1 )"）
+resolution = "1024x1024 ( 1:1 )"
+# 推理步数
+steps = 8
+# 时间偏移参数
+shift = 3
+# 轮询超时时间（秒）
+timeout = 120
+
+# ===== NovelAI API 专用配置 =====
+[image.novelai]
+# 模型名称
+model = "nai-diffusion-4-5-full"
+# 图像宽度
+width = 832
+# 图像高度
+height = 1216
+# 生成步数
+steps = 28
+# 引导强度
+scale = 5.0
+# 采样器
+sampler = "k_euler"
+# 负面提示词
+negative_prompt = ""
+# 随机种子，-1为随机
+seed = -1
+# 请求超时时间（秒）
+timeout = 120
 
 [llm_models]
 # 各功能使用的模型组配置

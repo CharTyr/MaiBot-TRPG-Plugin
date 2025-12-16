@@ -27,8 +27,6 @@ from src.common.logger import get_logger
 
 # 导入模型
 from .models.storage import StorageManager
-from .models.session import TRPGSession
-from .models.player import Player
 
 # 导入服务
 from .services.dice import DiceService
@@ -36,19 +34,8 @@ from .services.dm_engine import DMEngine
 
 # 导入组件
 from .components.commands import (
-    TRPGSessionCommand,
-    DiceRollCommand,
-    PlayerJoinCommand,
-    PlayerStatusCommand,
-    InventoryCommand,
-    HPCommand,
-    MPCommand,
-    DMCommand,
-    LoreCommand,
-    ModuleCommand,
-    SaveSlotCommand,
-    ImageCommand,
-    AdminJoinConfirmCommand,
+    TRPGCommand,
+    DiceShortcut,
     set_services as set_command_services,
     set_config as set_command_config,
 )
@@ -171,8 +158,8 @@ class TRPGDMPlugin(BasePlugin):
         
         logger.info(f"[{self.plugin_name}] 初始化服务...")
         
-        # 获取配置
-        config = self.plugin_config or {}
+        # 获取配置 (BasePlugin 使用 self.config)
+        config = getattr(self, 'config', {}) or {}
         
         # 初始化存储管理器（传入配置）
         self._storage = StorageManager(str(self.data_dir), config)
@@ -204,20 +191,10 @@ class TRPGDMPlugin(BasePlugin):
         self._initialize_services()
         
         return [
-            # 命令组件
-            (TRPGSessionCommand.get_command_info(), TRPGSessionCommand),
-            (DiceRollCommand.get_command_info(), DiceRollCommand),
-            (PlayerJoinCommand.get_command_info(), PlayerJoinCommand),
-            (PlayerStatusCommand.get_command_info(), PlayerStatusCommand),
-            (InventoryCommand.get_command_info(), InventoryCommand),
-            (HPCommand.get_command_info(), HPCommand),
-            (MPCommand.get_command_info(), MPCommand),
-            (DMCommand.get_command_info(), DMCommand),
-            (LoreCommand.get_command_info(), LoreCommand),
-            (ModuleCommand.get_command_info(), ModuleCommand),
-            (SaveSlotCommand.get_command_info(), SaveSlotCommand),
-            (ImageCommand.get_command_info(), ImageCommand),
-            (AdminJoinConfirmCommand.get_command_info(), AdminJoinConfirmCommand),
+            # 统一命令
+            (TRPGCommand.get_command_info(), TRPGCommand),
+            # 骰子快捷命令
+            (DiceShortcut.get_command_info(), DiceShortcut),
             
             # 事件处理器
             (TRPGMessageHandler.get_handler_info(), TRPGMessageHandler),

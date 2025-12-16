@@ -1,5 +1,6 @@
 """
-TRPG DM 插件命令组件
+TRPG DM 插件命令组件 - 统一命令系统
+所有命令统一使用 /trpg 前缀
 """
 
 import re
@@ -20,6 +21,7 @@ _storage: Optional["StorageManager"] = None
 _dice_service: Optional["DiceService"] = None
 _dm_engine: Optional["DMEngine"] = None
 _module_loader: Optional["ModuleLoader"] = None
+_plugin_config: dict = {}
 
 
 def set_services(storage: "StorageManager", dice: "DiceService", dm: "DMEngine", loader: "ModuleLoader" = None):
@@ -29,789 +31,6 @@ def set_services(storage: "StorageManager", dice: "DiceService", dm: "DMEngine",
     _dice_service = dice
     _dm_engine = dm
     _module_loader = loader
-
-
-class TRPGSessionCommand(BaseCommand):
-    """跑团会话管理命令"""
-    
-    command_name = "trpg_session"
-    command_description = "跑团会话管理 - 开始/结束/状态"
-    command_pattern = r"^/trpg\s*(start|end|status|save|pause|resume)?(?:\s+(.+))?$"
-
-    async def execute(self) -> Tuple[bool, Optional[str], int]:
-        if not _storage:
-            return False, "插件未正确初始化", 0
-        
-        stream_id = self.message.chat_stream.stream_id
-        action = self.matched_groups.get("1", "status") or "status"
-        args = self.matched_groups.get("2", "")
-        
-        if action == "start":
-            return await self._start_session(stream_id, args)
-        elif action == "end":
-            return await self._end_session(stream_id)
-        elif action == "status":
-            return await self._show_status(stream_id)
-        elif action == "save":
-            return await self._save_session(stream_id)
-        elif action == "pause":
-            return await self._pause_session(stream_id)
-        elif action == "resume":
-            return await self._resume_session(stream_id)
-        
-        return False, "未知的命令", 0
-
-    async def _start_session(self, stream_id: str, world_name: str) -> Tuple[bool, str, int]:
-        """开始新会话"""
-        existing = await _storage.get_session(stream_id)
-        if existing and existing.is_active():
-            return False, "⚠️ 当前群组已有进行中的跑团会话！使用 /trpg end 结束后再开始新的。", 2
-        
-        # 如果没有指定世界观，显示模组列表
-        if not world_name or not world_name.strip():
-            return await self._show_module_selection()
-        
-        world_name = world_name.strip()
-        
-        # 检查是否是预设模组
-        if _module_loader:
-            module = _module_loader.load_module(world_name)
-            if module:
-                # 使用预设模组
-                session = await _storage.create_session(stream_id, module.world_name)
-                await _module_loader.apply_module_to_session(module, session, _storage)
-                
-                await self.send_text(f"""🎲 跑团开始！
-
-📚 模组: {module.info.name}
-🎭 类型: {module.info.genre} | 难度: {module.info.difficulty}
-👥 建议人数: {module.info.player_count} | ⏱️ 预计时长: {module.info.duration}
-
-{module.intro_text}
-
-📋 常用命令:
-• /join [角色名] - 加入冒险
-• /r [骰子] - 掷骰子 (如 /r 2d6+3)
-• /pc show - 查看角色卡
-• /module info - 查看模组信息
-• /trpg end - 结束跑团""")
-                
-                return True, f"模组 {module.info.name} 已加载", 2
-        
-        # 普通会话
-        session = await _storage.create_session(stream_id, world_name)
-        
-        # 生成开场白
-        intro = await _dm_engine.generate_session_intro(session)
-        session.add_history("system", f"跑团开始: {world_name}")
-        await _storage.save_session(session)
-        
-        await self.send_text(f"""🎲 跑团开始！
-
-世界观: {world_name}
-{intro}
-
-📋 常用命令:
-• /join [角色名] - 加入冒险
-• /r [骰子] - 掷骰子 (如 /r 2d6+3)
-• /pc show - 查看角色卡
-• /inv - 查看背包
-• /trpg end - 结束跑团""")
-        
-        return True, "跑团会话已开始", 2
-
-    async def _show_module_selection(self) -> Tuple[bool, str, int]:
-        """显示模组选择列表"""
-        if not _module_loader:
-            await self.send_text("⚠️ 模组系统未初始化")
-            return False, "模组系统未初始化", 0
-        
-        modules = _module_loader.list_available_modules()
-        
-        genre_names = {
-            "fantasy": "🗡️ 奇幻",
-            "horror": "👻 恐怖",
-            "scifi": "🚀 科幻",
-            "modern": "🏙️ 现代",
-        }
-        difficulty_icons = {"easy": "🟢", "normal": "🟡", "hard": "🔴"}
-        
-        # 按类型分组
-        by_genre = {}
-        for m in modules:
-            genre = m.get("genre", "其他")
-            if genre not in by_genre:
-                by_genre[genre] = []
-            by_genre[genre].append(m)
-        
-        text = "🎲 请选择一个模组开始跑团：\n"
-        
-        for genre, mods in by_genre.items():
-            genre_display = genre_names.get(genre, f"📁 {genre}")
-            text += f"\n{genre_display}:\n"
-            for m in mods:
-                diff_icon = difficulty_icons.get(m.get("difficulty"), "⚪")
-                player_count = m.get("player_count", "?")
-                text += f"  {diff_icon} {m['name']} ({m['id']}) 👥{player_count}\n"
-        
-        text += "\n📝 用法:\n"
-        text += "• /trpg start [模组ID] - 使用预设模组\n"
-        text += "• /trpg start [自定义世界观] - 自由模式\n"
-        text += "\n💡 推荐新手使用 /trpg start solo_mystery 单人测试"
-        
-        await self.send_text(text)
-        return True, None, 2
-
-    async def _end_session(self, stream_id: str) -> Tuple[bool, str, int]:
-        """结束会话"""
-        session = await _storage.get_session(stream_id)
-        if not session:
-            return False, "⚠️ 当前没有进行中的跑团会话", 2
-        
-        # 保存最终状态
-        session.add_history("system", "跑团结束")
-        await _storage.save_session(session)
-        await _storage.end_session(stream_id)
-        
-        await self.send_text("🎲 跑团结束！感谢各位冒险者的参与！\n存档已保存，下次可以继续冒险。")
-        return True, "跑团会话已结束", 2
-
-    async def _show_status(self, stream_id: str) -> Tuple[bool, str, int]:
-        """显示会话状态"""
-        session = await _storage.get_session(stream_id)
-        if not session:
-            await self.send_text("📋 当前没有进行中的跑团会话\n使用 /trpg start [世界观] 开始新的冒险！")
-            return True, None, 2
-        
-        players = await _storage.get_players_in_session(stream_id)
-        player_list = "\n".join([f"  • {p.character_name}" for p in players]) or "  暂无玩家"
-        
-        status_text = f"""📋 跑团状态
-
-🌍 世界观: {session.world_name}
-📍 位置: {session.world_state.location}
-🕐 时间: {session.world_state.time_of_day}
-🌤️ 天气: {session.world_state.weather}
-📊 状态: {session.status}
-
-👥 玩家列表:
-{player_list}
-
-📜 历史记录: {len(session.history)} 条"""
-        
-        await self.send_text(status_text)
-        return True, None, 2
-
-    async def _save_session(self, stream_id: str) -> Tuple[bool, str, int]:
-        """手动保存"""
-        session = await _storage.get_session(stream_id)
-        if not session:
-            return False, "⚠️ 当前没有进行中的跑团会话", 2
-        
-        await _storage.save_session(session)
-        await self.send_text("💾 存档已保存！")
-        return True, "存档已保存", 2
-
-    async def _pause_session(self, stream_id: str) -> Tuple[bool, str, int]:
-        """暂停会话"""
-        session = await _storage.get_session(stream_id)
-        if not session:
-            return False, "⚠️ 当前没有进行中的跑团会话", 2
-        
-        session.status = "paused"
-        session.add_history("system", "跑团暂停")
-        await _storage.save_session(session)
-        
-        await self.send_text("⏸️ 跑团已暂停，使用 /trpg resume 继续")
-        return True, "跑团已暂停", 2
-
-    async def _resume_session(self, stream_id: str) -> Tuple[bool, str, int]:
-        """恢复会话"""
-        session = await _storage.get_session(stream_id)
-        if not session:
-            return False, "⚠️ 当前没有跑团会话", 2
-        
-        if session.status != "paused":
-            return False, "⚠️ 会话未处于暂停状态", 2
-        
-        session.status = "active"
-        session.add_history("system", "跑团继续")
-        await _storage.save_session(session)
-        
-        await self.send_text("▶️ 跑团继续！冒险者们，准备好了吗？")
-        return True, "跑团已继续", 2
-
-
-class DiceRollCommand(BaseCommand):
-    """骰子投掷命令"""
-    
-    command_name = "dice_roll"
-    command_description = "掷骰子"
-    command_pattern = r"^/r(?:oll)?\s+(.+)$"
-
-    async def execute(self) -> Tuple[bool, Optional[str], int]:
-        if not _dice_service:
-            return False, "插件未正确初始化", 0
-        
-        expression = self.matched_groups.get("1", "d20")
-        
-        try:
-            result = _dice_service.roll(expression)
-            await self.send_text(result.get_display())
-            
-            # 记录到历史
-            stream_id = self.message.chat_stream.stream_id
-            session = await _storage.get_session(stream_id) if _storage else None
-            if session and session.is_active():
-                user_id = str(self.message.message_info.user_info.user_id)
-                player = await _storage.get_player(stream_id, user_id)
-                session.add_history(
-                    "dice",
-                    f"{expression} = {result.total}",
-                    user_id=user_id,
-                    character_name=player.character_name if player else None,
-                    extra_data={"rolls": result.rolls, "total": result.total}
-                )
-                await _storage.save_session(session)
-            
-            return True, None, 2
-            
-        except Exception as e:
-            logger.error(f"掷骰子失败: {e}")
-            await self.send_text(f"⚠️ 骰子表达式无效: {expression}")
-            return False, str(e), 0
-
-
-class PlayerJoinCommand(BaseCommand):
-    """玩家加入命令"""
-    
-    command_name = "player_join"
-    command_description = "加入跑团"
-    command_pattern = r"^/join(?:\s+(.+))?$"
-
-    async def execute(self) -> Tuple[bool, Optional[str], int]:
-        if not _storage:
-            return False, "插件未正确初始化", 0
-        
-        stream_id = self.message.chat_stream.stream_id
-        user_id = str(self.message.message_info.user_info.user_id)
-        character_name = self.matched_groups.get("1", "").strip() or "无名冒险者"
-        
-        session = await _storage.get_session(stream_id)
-        if not session or not session.is_active():
-            await self.send_text("⚠️ 当前没有进行中的跑团会话")
-            return False, "没有活跃会话", 0
-        
-        # 检查是否已加入
-        existing = await _storage.get_player(stream_id, user_id)
-        if existing:
-            await self.send_text(f"⚠️ 你已经以 {existing.character_name} 的身份加入了冒险！")
-            return False, "已加入", 0
-        
-        # 创建玩家
-        player = await _storage.create_player(stream_id, user_id, character_name)
-        
-        session.add_history("system", f"{character_name} 加入了冒险", user_id=user_id)
-        await _storage.save_session(session)
-        
-        await self.send_text(f"""🎭 欢迎 {character_name} 加入冒险！
-
-{player.get_character_sheet()}
-
-使用 /pc [属性] [值] 来自定义你的角色属性
-使用 /pc show 查看完整角色卡""")
-        
-        return True, f"{character_name} 加入", 2
-
-
-class PlayerStatusCommand(BaseCommand):
-    """玩家状态命令"""
-    
-    command_name = "player_status"
-    command_description = "查看/修改角色状态"
-    command_pattern = r"^/pc(?:\s+(show|set|leave))?(?:\s+(\w+))?(?:\s+(\d+))?$"
-
-    async def execute(self) -> Tuple[bool, Optional[str], int]:
-        if not _storage:
-            return False, "插件未正确初始化", 0
-        
-        stream_id = self.message.chat_stream.stream_id
-        user_id = str(self.message.message_info.user_info.user_id)
-        
-        action = self.matched_groups.get("1", "show") or "show"
-        attr_name = self.matched_groups.get("2", "")
-        attr_value = self.matched_groups.get("3", "")
-        
-        player = await _storage.get_player(stream_id, user_id)
-        if not player:
-            await self.send_text("⚠️ 你还没有加入跑团！使用 /join [角色名] 加入")
-            return False, "未加入", 0
-        
-        if action == "show":
-            await self.send_text(player.get_character_sheet())
-            return True, None, 2
-        
-        elif action == "set" and attr_name and attr_value:
-            if player.attributes.set_attribute(attr_name, int(attr_value)):
-                await _storage.save_player(player)
-                await self.send_text(f"✅ 已将 {attr_name} 设置为 {attr_value}")
-                return True, None, 2
-            else:
-                await self.send_text(f"⚠️ 未知属性: {attr_name}")
-                return False, "未知属性", 0
-        
-        elif action == "leave":
-            await _storage.delete_player(stream_id, user_id)
-            await self.send_text(f"👋 {player.character_name} 离开了冒险...")
-            return True, "离开", 2
-        
-        await self.send_text("⚠️ 命令格式错误\n用法: /pc show | /pc set [属性] [值] | /pc leave")
-        return False, "格式错误", 0
-
-
-class InventoryCommand(BaseCommand):
-    """背包管理命令"""
-    
-    command_name = "inventory"
-    command_description = "背包管理"
-    # 改进的正则：物品名不能以数字结尾（数字会被当作数量）
-    command_pattern = r"^/inv(?:\s+(add|remove|use))?(?:\s+(.+?))?$"
-
-    async def execute(self) -> Tuple[bool, Optional[str], int]:
-        if not _storage:
-            return False, "插件未正确初始化", 0
-        
-        stream_id = self.message.chat_stream.stream_id
-        user_id = str(self.message.message_info.user_info.user_id)
-        
-        action = self.matched_groups.get("1", "")
-        raw_args = self.matched_groups.get("2", "").strip()
-        
-        # 解析物品名和数量：最后一个空格分隔的数字作为数量
-        item_name = raw_args
-        quantity = 1
-        if raw_args:
-            parts = raw_args.rsplit(None, 1)  # 从右边分割一次
-            if len(parts) == 2 and parts[1].isdigit():
-                item_name = parts[0]
-                quantity = int(parts[1])
-        
-        player = await _storage.get_player(stream_id, user_id)
-        if not player:
-            await self.send_text("⚠️ 你还没有加入跑团！")
-            return False, "未加入", 0
-        
-        if not action:
-            # 显示背包
-            await self.send_text(player.get_inventory_display())
-            return True, None, 2
-        
-        if action == "add" and item_name:
-            player.add_item(item_name, quantity)
-            await _storage.save_player(player)
-            await self.send_text(f"✅ 获得了 {item_name} x{quantity}")
-            return True, None, 2
-        
-        elif action == "remove" and item_name:
-            removed = player.remove_item(item_name, quantity)
-            if removed:
-                await _storage.save_player(player)
-                await self.send_text(f"✅ 移除了 {item_name} x{quantity}")
-                return True, None, 2
-            else:
-                await self.send_text(f"⚠️ 背包中没有 {item_name}")
-                return False, "物品不存在", 0
-        
-        elif action == "use" and item_name:
-            item = player.get_item(item_name)
-            if item:
-                player.remove_item(item_name, 1)
-                await _storage.save_player(player)
-                await self.send_text(f"✨ 使用了 {item_name}！")
-                return True, None, 2
-            else:
-                await self.send_text(f"⚠️ 背包中没有 {item_name}")
-                return False, "物品不存在", 0
-        
-        await self.send_text("⚠️ 命令格式错误\n用法: /inv | /inv add [物品] [数量] | /inv remove [物品] [数量] | /inv use [物品]")
-        return False, "格式错误", 0
-
-
-class HPCommand(BaseCommand):
-    """生命值修改命令"""
-    
-    command_name = "hp_modify"
-    command_description = "修改生命值"
-    command_pattern = r"^/hp\s*([+-]?\d+)$"
-
-    async def execute(self) -> Tuple[bool, Optional[str], int]:
-        if not _storage:
-            return False, "插件未正确初始化", 0
-        
-        stream_id = self.message.chat_stream.stream_id
-        user_id = str(self.message.message_info.user_info.user_id)
-        amount = int(self.matched_groups.get("1", "0"))
-        
-        player = await _storage.get_player(stream_id, user_id)
-        if not player:
-            await self.send_text("⚠️ 你还没有加入跑团！")
-            return False, "未加入", 0
-        
-        old_hp, new_hp = player.modify_hp(amount)
-        await _storage.save_player(player)
-        
-        change_text = f"+{amount}" if amount > 0 else str(amount)
-        status = "💀 倒下了！" if new_hp <= 0 else ""
-        
-        await self.send_text(f"❤️ HP: {old_hp} → {new_hp}/{player.hp_max} ({change_text}) {status}")
-        return True, None, 2
-
-
-class MPCommand(BaseCommand):
-    """魔力值修改命令"""
-    
-    command_name = "mp_modify"
-    command_description = "修改魔力值"
-    command_pattern = r"^/mp\s*([+-]?\d+)$"
-
-    async def execute(self) -> Tuple[bool, Optional[str], int]:
-        if not _storage:
-            return False, "插件未正确初始化", 0
-        
-        stream_id = self.message.chat_stream.stream_id
-        user_id = str(self.message.message_info.user_info.user_id)
-        amount = int(self.matched_groups.get("1", "0"))
-        
-        player = await _storage.get_player(stream_id, user_id)
-        if not player:
-            await self.send_text("⚠️ 你还没有加入跑团！")
-            return False, "未加入", 0
-        
-        old_mp, new_mp = player.modify_mp(amount)
-        await _storage.save_player(player)
-        
-        change_text = f"+{amount}" if amount > 0 else str(amount)
-        
-        await self.send_text(f"💙 MP: {old_mp} → {new_mp}/{player.mp_max} ({change_text})")
-        return True, None, 2
-
-
-class DMCommand(BaseCommand):
-    """DM 专用命令"""
-    
-    command_name = "dm_control"
-    command_description = "DM 控制命令"
-    command_pattern = r"^/dm\s+(time|weather|location|npc|event|describe)(?:\s+(.+))?$"
-
-    async def execute(self) -> Tuple[bool, Optional[str], int]:
-        if not _storage or not _dm_engine:
-            return False, "插件未正确初始化", 0
-        
-        stream_id = self.message.chat_stream.stream_id
-        action = self.matched_groups.get("1", "")
-        args = self.matched_groups.get("2", "").strip()
-        
-        session = await _storage.get_session(stream_id)
-        if not session:
-            await self.send_text("⚠️ 当前没有进行中的跑团会话")
-            return False, "无会话", 0
-        
-        # TODO: 添加权限检查
-        
-        if action == "time" and args:
-            session.world_state.time_of_day = args
-            session.add_history("system", f"时间变为: {args}")
-            await _storage.save_session(session)
-            await self.send_text(f"🕐 时间已设置为: {args}")
-            return True, None, 2
-        
-        elif action == "weather" and args:
-            session.world_state.weather = args
-            session.add_history("system", f"天气变为: {args}")
-            await _storage.save_session(session)
-            await self.send_text(f"🌤️ 天气已设置为: {args}")
-            return True, None, 2
-        
-        elif action == "location" and args:
-            session.world_state.location = args
-            session.add_history("system", f"场景转换: {args}")
-            await _storage.save_session(session)
-            await self.send_text(f"📍 位置已设置为: {args}")
-            return True, None, 2
-        
-        elif action == "npc" and args:
-            parts = args.split(maxsplit=1)
-            npc_name = parts[0]
-            npc_action = parts[1] if len(parts) > 1 else ""
-            
-            if npc_name not in session.npcs:
-                session.add_npc(npc_name)
-            
-            if npc_action:
-                response = await _dm_engine.generate_npc_dialogue(session, npc_name, npc_action)
-                session.add_history("dm", response)
-                await _storage.save_session(session)
-                await self.send_text(response)
-            else:
-                await self.send_text(f"✅ NPC {npc_name} 已添加")
-            return True, None, 2
-        
-        elif action == "event" and args:
-            session.add_history("dm", f"[事件] {args}")
-            await _storage.save_session(session)
-            await self.send_text(f"⚡ 事件发生: {args}")
-            return True, None, 2
-        
-        elif action == "describe":
-            description = await _dm_engine.describe_environment(session)
-            session.add_history("dm", description)
-            await _storage.save_session(session)
-            await self.send_text(description)
-            return True, None, 2
-        
-        await self.send_text("⚠️ DM 命令格式错误")
-        return False, "格式错误", 0
-
-
-class LoreCommand(BaseCommand):
-    """世界观设定命令"""
-    
-    command_name = "lore"
-    command_description = "世界观设定管理"
-    command_pattern = r"^/lore(?:\s+(add|search))?(?:\s+(.+))?$"
-
-    async def execute(self) -> Tuple[bool, Optional[str], int]:
-        if not _storage:
-            return False, "插件未正确初始化", 0
-        
-        stream_id = self.message.chat_stream.stream_id
-        action = self.matched_groups.get("1", "")
-        content = self.matched_groups.get("2", "").strip()
-        
-        session = await _storage.get_session(stream_id)
-        if not session:
-            await self.send_text("⚠️ 当前没有进行中的跑团会话")
-            return False, "无会话", 0
-        
-        if action == "add" and content:
-            await _storage.add_lore(stream_id, content)
-            await self.send_text(f"📚 已添加世界观设定:\n{content}")
-            return True, None, 2
-        
-        elif action == "search" and content:
-            results = await _storage.search_lore(stream_id, content)
-            if results:
-                text = "📚 搜索结果:\n" + "\n".join([f"• {r}" for r in results[:5]])
-                await self.send_text(text)
-            else:
-                await self.send_text(f"📚 未找到与 '{content}' 相关的设定")
-            return True, None, 2
-        
-        else:
-            # 显示所有设定
-            lore = await _storage.get_lore(stream_id)
-            if lore:
-                text = "📚 世界观设定:\n" + "\n".join([f"• {l}" for l in lore[:10]])
-                if len(lore) > 10:
-                    text += f"\n... 还有 {len(lore) - 10} 条设定"
-                await self.send_text(text)
-            else:
-                await self.send_text("📚 暂无世界观设定\n使用 /lore add [设定内容] 添加")
-            return True, None, 2
-
-
-class ModuleCommand(BaseCommand):
-    """模组管理命令"""
-    
-    command_name = "module"
-    command_description = "模组管理"
-    command_pattern = r"^/module(?:\s+(list|info|load|import))?(?:\s+(.+))?$"
-
-    async def execute(self) -> Tuple[bool, Optional[str], int]:
-        if not _module_loader:
-            await self.send_text("⚠️ 模组系统未初始化")
-            return False, "模组系统未初始化", 0
-        
-        action = self.matched_groups.get("1", "list") or "list"
-        args = self.matched_groups.get("2", "").strip()
-        
-        if action == "list":
-            return await self._list_modules()
-        elif action == "info" and args:
-            return await self._show_module_info(args)
-        elif action == "load" and args:
-            return await self._load_module(args)
-        elif action == "import":
-            return await self._import_module_hint()
-        
-        await self.send_text("""📚 模组命令用法:
-• /module list - 列出所有可用模组
-• /module info [模组ID] - 查看模组详情
-• /module load [模组ID] - 加载模组开始跑团
-• /module import - 查看如何导入自定义模组
-
-💡 也可以直接使用 /trpg start [模组ID] 开始""")
-        return True, None, 2
-
-    async def _list_modules(self) -> Tuple[bool, str, int]:
-        """列出所有可用模组"""
-        modules = _module_loader.list_available_modules()
-        
-        if not modules:
-            await self.send_text("📚 暂无可用模组")
-            return True, None, 2
-        
-        # 按类型分组
-        by_genre = {}
-        for m in modules:
-            genre = m.get("genre", "其他")
-            if genre not in by_genre:
-                by_genre[genre] = []
-            by_genre[genre].append(m)
-        
-        genre_names = {
-            "fantasy": "🗡️ 奇幻",
-            "horror": "👻 恐怖",
-            "scifi": "🚀 科幻",
-            "modern": "🏙️ 现代",
-        }
-        difficulty_icons = {"easy": "🟢", "normal": "🟡", "hard": "🔴"}
-        
-        text = "📚 可用模组列表:\n"
-        for genre, mods in by_genre.items():
-            genre_display = genre_names.get(genre, f"📁 {genre}")
-            text += f"\n{genre_display}:\n"
-            for m in mods:
-                diff_icon = difficulty_icons.get(m.get("difficulty"), "⚪")
-                player_count = m.get("player_count", "?")
-                text += f"  {diff_icon} {m['name']} ({m['id']}) 👥{player_count}\n"
-        
-        text += "\n使用 /module info [模组ID] 查看详情"
-        await self.send_text(text)
-        return True, None, 2
-
-    async def _show_module_info(self, module_id: str) -> Tuple[bool, str, int]:
-        """显示模组详情"""
-        info = _module_loader.get_module_info(module_id)
-        
-        if not info:
-            await self.send_text(f"⚠️ 未找到模组: {module_id}")
-            return False, "模组不存在", 0
-        
-        module_info = info["info"]
-        difficulty_text = {"easy": "简单 🟢", "normal": "普通 🟡", "hard": "困难 🔴"}.get(
-            module_info["difficulty"], module_info["difficulty"]
-        )
-        
-        text = f"""📚 模组详情: {module_info['name']}
-
-📝 简介: {module_info['description']}
-
-📊 信息:
-• 作者: {module_info['author']}
-• 类型: {module_info['genre']}
-• 难度: {difficulty_text}
-• 建议人数: {module_info['player_count']}
-• 预计时长: {module_info['duration']}
-• 标签: {', '.join(module_info['tags'])}
-
-🌍 世界观: {info['world_name']}
-👥 NPC数量: {info['npc_count']}
-📍 地点数量: {info['location_count']}
-🎭 结局数量: {info['ending_count']}
-
-使用 /trpg start {module_id} 开始此模组"""
-        
-        await self.send_text(text)
-        return True, None, 2
-
-    async def _load_module(self, module_id: str) -> Tuple[bool, str, int]:
-        """加载模组"""
-        stream_id = self.message.chat_stream.stream_id
-        
-        # 检查是否已有会话
-        existing = await _storage.get_session(stream_id)
-        if existing and existing.is_active():
-            await self.send_text("⚠️ 当前已有进行中的跑团会话！\n使用 /trpg end 结束后再加载新模组")
-            return False, "已有会话", 0
-        
-        # 加载模组
-        module = _module_loader.load_module(module_id)
-        if not module:
-            await self.send_text(f"⚠️ 未找到模组: {module_id}")
-            return False, "模组不存在", 0
-        
-        # 创建会话并应用模组
-        session = await _storage.create_session(stream_id, module.world_name)
-        await _module_loader.apply_module_to_session(module, session, _storage)
-        
-        await self.send_text(f"""🎲 模组加载成功！
-
-📚 {module.info.name}
-🎭 {module.info.genre} | 难度: {module.info.difficulty}
-
-{module.intro_text}
-
-📋 使用 /join [角色名] 加入冒险！""")
-        
-        return True, f"模组 {module.info.name} 已加载", 2
-
-    async def _import_module_hint(self) -> Tuple[bool, str, int]:
-        """显示模组导入说明"""
-        await self.send_text("""📥 导入自定义模组
-
-✨ 推荐方式：Markdown 格式
-
-将 .md 文件放入插件目录：
-`plugins/MaiBot_TRPG_DM/custom_modules/`
-
-插件会自动扫描并导入 Markdown 模组！
-
-📝 Markdown 模组格式示例：
-```markdown
----
-id: my_adventure
-name: 我的冒险
-genre: fantasy
-difficulty: normal
-player_count: 2-4
-author: 你的名字
----
-
-# 我的冒险模组
-
-## 简介
-这是一个奇幻冒险模组...
-
-## 世界观背景
-在遥远的大陆上...
-
-## 开场白
-冒险者们来到了一个神秘的村庄...
-
-## NPC
-### 村长老王
-一位和蔼的老人，知道很多秘密。
-
-## 地点
-### 神秘森林
-阴暗的森林，据说有怪物出没。
-
-## 物品
-- 古老钥匙：打开地下室的钥匙
-- 治疗药水：恢复 10 点 HP
-```
-
-📁 其他支持格式：
-• JSON 文件 → `modules/custom/`
-• PDF 文件 → 需要安装解析库
-
-详细格式请参考 README.md""")
-        return True, None, 2
-
-
-# 全局配置引用
-_plugin_config: dict = {}
 
 
 def set_config(config: dict):
@@ -826,180 +45,780 @@ def _is_admin(user_id: str) -> bool:
     return str(user_id) in [str(a) for a in admin_users]
 
 
-class SaveSlotCommand(BaseCommand):
-    """存档插槽管理命令"""
+# ============================================================
+# 统一 TRPG 命令 - 所有功能通过 /trpg 访问
+# ============================================================
+
+class TRPGCommand(BaseCommand):
+    """
+    统一的 TRPG 命令处理器
     
-    command_name = "save_slot"
-    command_description = "存档插槽管理"
-    command_pattern = r"^/slot(?:\s+(list|save|load|delete))?(?:\s+(\d+))?$"
+    命令格式: /trpg <子命令> [参数]
+    
+    子命令列表:
+    - help: 显示帮助
+    - start [模组]: 开始跑团
+    - end: 结束跑团
+    - status: 查看状态
+    - join [角色名]: 加入游戏
+    - pc [show|set|leave]: 角色管理
+    - r/roll [表达式]: 掷骰子
+    - inv [add|rm|use]: 背包管理
+    - hp/mp [+/-n]: 修改属性
+    - dm [子命令]: DM控制
+    - slot [list|save|load]: 存档管理
+    - module [list|info]: 模组管理
+    """
+    
+    command_name = "trpg_unified"
+    command_description = "TRPG 跑团统一命令"
+    # 匹配 /trpg 后跟可选的子命令和参数
+    command_pattern = r"^/trpg(?:\s+(?P<subcmd>\S+))?(?:\s+(?P<args>.*))?$"
 
     async def execute(self) -> Tuple[bool, Optional[str], int]:
         if not _storage:
             return False, "插件未正确初始化", 0
         
-        stream_id = self.message.chat_stream.stream_id
-        action = self.matched_groups.get("1", "list") or "list"
-        slot_num = self.matched_groups.get("2", "")
+        subcmd = (self.matched_groups.get("subcmd") or "help").lower()
+        args = (self.matched_groups.get("args") or "").strip()
         
-        if action == "list":
-            return await self._list_slots(stream_id)
-        elif action == "save" and slot_num:
-            return await self._save_to_slot(stream_id, int(slot_num))
-        elif action == "load" and slot_num:
-            return await self._load_from_slot(stream_id, int(slot_num))
-        elif action == "delete" and slot_num:
-            return await self._delete_slot(stream_id, int(slot_num))
+        # 路由到对应的处理方法
+        handlers = {
+            "help": self._help,
+            "h": self._help,
+            "start": self._start,
+            "end": self._end,
+            "status": self._status,
+            "s": self._status,
+            "join": self._join,
+            "j": self._join,
+            "pc": self._pc,
+            "r": self._roll,
+            "roll": self._roll,
+            "inv": self._inventory,
+            "i": self._inventory,
+            "hp": self._hp,
+            "mp": self._mp,
+            "dm": self._dm,
+            "slot": self._slot,
+            "save": self._save,
+            "module": self._module,
+            "mod": self._module,
+            "lore": self._lore,
+            "scene": self._scene,
+            "confirm": self._confirm,
+            "pause": self._pause,
+            "resume": self._resume,
+        }
         
-        await self.send_text("""💾 存档插槽命令用法:
-• /slot list - 查看所有存档插槽
-• /slot save [插槽号] - 保存当前进度到插槽
-• /slot load [插槽号] - 从插槽加载存档
-• /slot delete [插槽号] - 删除插槽存档
+        handler = handlers.get(subcmd)
+        if handler:
+            return await handler(args)
+        
+        # 未知子命令，显示帮助
+        await self.send_text(f"⚠️ 未知命令: /trpg {subcmd}\n使用 /trpg help 查看帮助")
+        return False, "未知命令", 0
 
-💡 每个群组有独立的存档插槽""")
+
+    # ==================== 帮助 ====================
+    async def _help(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """显示帮助信息"""
+        help_text = """🎲 MaiBot TRPG DM 跑团插件
+
+━━━ 📋 会话管理 ━━━
+/trpg start [模组]  开始跑团
+/trpg end           结束跑团
+/trpg status        查看状态
+/trpg save          手动保存
+/trpg pause/resume  暂停/继续
+
+━━━ 🎭 玩家操作 ━━━
+/trpg join [角色名] 加入跑团
+/trpg pc show       查看角色卡
+/trpg pc set 属性 值 设置属性
+/trpg pc leave      离开跑团
+/trpg hp +/-数值    修改HP
+/trpg mp +/-数值    修改MP
+
+━━━ 🎒 背包系统 ━━━
+/trpg inv           查看背包
+/trpg inv add 物品 数量
+/trpg inv rm 物品 数量
+/trpg inv use 物品
+
+━━━ 🎲 骰子命令 ━━━
+/trpg r d20         掷一个20面骰
+/trpg r 2d6+3       掷两个6面骰加3
+
+━━━ 💾 存档系统 ━━━
+/trpg slot list     查看存档
+/trpg slot save 1-3 保存存档
+/trpg slot load 1-3 加载存档
+
+━━━ 📚 模组管理 ━━━
+/trpg mod list      列出模组
+/trpg mod info ID   模组详情
+
+━━━ 🎮 DM命令 ━━━
+/trpg dm time 时间
+/trpg dm weather 天气
+/trpg dm location 位置
+/trpg dm npc 名称 动作
+/trpg dm event 描述
+/trpg dm describe
+
+━━━ 💡 角色扮演格式 ━━━
+*动作描述*  （动作）  "对话"
+
+🌟 快速开始: /trpg start solo_mystery"""
+        
+        await self.send_text(help_text)
         return True, None, 2
 
-    async def _list_slots(self, stream_id: str) -> Tuple[bool, str, int]:
-        """列出所有存档插槽"""
-        slots = await _storage.list_save_slots(stream_id)
+
+    # ==================== 会话管理 ====================
+    async def _start(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """开始跑团会话"""
+        stream_id = self.message.chat_stream.stream_id
         
-        text = "💾 存档插槽:\n"
-        for slot in slots:
-            slot_num = slot["slot"]
-            if slot.get("exists"):
-                world_name = slot.get("world_name", "未知")
-                player_count = slot.get("player_count", 0)
-                saved_at = slot.get("created_at", "未知")
-                text += f"\n📁 插槽 {slot_num}: {world_name}\n"
-                text += f"   👥 {player_count}名玩家 | 📅 {saved_at}\n"
-            else:
-                text += f"\n📁 插槽 {slot_num}: (空)\n"
+        existing = await _storage.get_session(stream_id)
+        if existing and existing.is_active():
+            return False, "⚠️ 已有进行中的跑团！使用 /trpg end 结束", 2
         
+        if not args:
+            return await self._show_module_list()
+        
+        # 检查是否是预设模组
+        if _module_loader:
+            module = _module_loader.load_module(args)
+            if module:
+                session = await _storage.create_session(stream_id, module.world_name)
+                await _module_loader.apply_module_to_session(module, session, _storage)
+                
+                await self.send_text(f"""🎲 跑团开始！
+
+📚 模组: {module.info.name}
+🎭 {module.info.genre} | 难度: {module.info.difficulty}
+👥 建议: {module.info.player_count} | ⏱️ {module.info.duration}
+
+{module.intro_text}
+
+📋 使用 /trpg join [角色名] 加入冒险""")
+                return True, f"模组 {module.info.name} 已加载", 2
+        
+        # 自由模式
+        session = await _storage.create_session(stream_id, args)
+        intro = await _dm_engine.generate_session_intro(session)
+        session.add_history("system", f"跑团开始: {args}")
+        await _storage.save_session(session)
+        
+        await self.send_text(f"""🎲 跑团开始！
+
+世界观: {args}
+{intro}
+
+📋 使用 /trpg join [角色名] 加入冒险""")
+        return True, "跑团会话已开始", 2
+
+    async def _show_module_list(self) -> Tuple[bool, Optional[str], int]:
+        """显示模组选择列表"""
+        if not _module_loader:
+            await self.send_text("⚠️ 模组系统未初始化")
+            return False, "模组系统未初始化", 0
+        
+        modules = _module_loader.list_available_modules()
+        genre_names = {"fantasy": "🗡️奇幻", "horror": "👻恐怖", "scifi": "🚀科幻", "modern": "🏙️现代"}
+        diff_icons = {"easy": "🟢", "normal": "🟡", "hard": "🔴"}
+        
+        by_genre = {}
+        for m in modules:
+            genre = m.get("genre", "其他")
+            by_genre.setdefault(genre, []).append(m)
+        
+        text = "🎲 请选择模组:\n"
+        for genre, mods in by_genre.items():
+            text += f"\n{genre_names.get(genre, genre)}:\n"
+            for m in mods:
+                text += f"  {diff_icons.get(m.get('difficulty'), '⚪')} {m['name']} ({m['id']})\n"
+        
+        text += "\n📝 /trpg start [模组ID] 或 /trpg start [自定义世界观]"
         await self.send_text(text)
         return True, None, 2
 
-    async def _save_to_slot(self, stream_id: str, slot_num: int) -> Tuple[bool, str, int]:
-        """保存到插槽"""
-        success, message = await _storage.save_to_slot(stream_id, slot_num)
-        
-        if success:
-            await self.send_text(f"💾 {message}")
-        else:
-            await self.send_text(f"⚠️ {message}")
-        
-        return success, message, 2
 
-    async def _load_from_slot(self, stream_id: str, slot_num: int) -> Tuple[bool, str, int]:
-        """从插槽加载"""
-        success, message = await _storage.load_from_slot(stream_id, slot_num)
-        
-        if success:
-            await self.send_text(f"💾 {message}\n\n使用 /trpg status 查看当前状态")
-        else:
-            await self.send_text(f"⚠️ {message}")
-        
-        return success, message, 2
-
-    async def _delete_slot(self, stream_id: str, slot_num: int) -> Tuple[bool, str, int]:
-        """删除插槽"""
-        # 检查权限
-        user_id = str(self.message.message_info.user_info.user_id)
-        if not _is_admin(user_id):
-            await self.send_text("⚠️ 只有管理员可以删除存档")
-            return False, "权限不足", 0
-        
-        success, message = await _storage.delete_slot(stream_id, slot_num)
-        
-        if success:
-            await self.send_text(f"🗑️ {message}")
-        else:
-            await self.send_text(f"⚠️ {message}")
-        
-        return success, message, 2
-
-
-class ImageCommand(BaseCommand):
-    """场景图片生成命令"""
-    
-    command_name = "trpg_image"
-    command_description = "生成场景图片"
-    command_pattern = r"^/scene(?:\s+(image|pic))?(?:\s+(.+))?$"
-
-    async def execute(self) -> Tuple[bool, Optional[str], int]:
-        if not _storage:
-            return False, "插件未正确初始化", 0
-        
+    async def _end(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """结束跑团会话"""
         stream_id = self.message.chat_stream.stream_id
-        context = self.matched_groups.get("2", "").strip()
+        session = await _storage.get_session(stream_id)
+        
+        if not session:
+            return False, "⚠️ 当前没有进行中的跑团", 2
+        
+        session.add_history("system", "跑团结束")
+        await _storage.save_session(session)
+        await _storage.end_session(stream_id)
+        
+        await self.send_text("🎲 跑团结束！感谢各位冒险者的参与！")
+        return True, "跑团已结束", 2
+
+    async def _status(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """显示会话状态"""
+        stream_id = self.message.chat_stream.stream_id
+        session = await _storage.get_session(stream_id)
+        
+        if not session:
+            await self.send_text("📋 当前没有跑团会话\n使用 /trpg start 开始")
+            return True, None, 2
+        
+        players = await _storage.get_players_in_session(stream_id)
+        player_list = "\n".join([f"  • {p.character_name}" for p in players]) or "  暂无"
+        
+        await self.send_text(f"""📋 跑团状态
+
+🌍 世界观: {session.world_name}
+📍 位置: {session.world_state.location}
+🕐 时间: {session.world_state.time_of_day}
+🌤️ 天气: {session.world_state.weather}
+📊 状态: {session.status}
+
+👥 玩家:
+{player_list}""")
+        return True, None, 2
+
+    async def _save(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """手动保存"""
+        stream_id = self.message.chat_stream.stream_id
+        session = await _storage.get_session(stream_id)
+        
+        if not session:
+            return False, "⚠️ 当前没有跑团会话", 2
+        
+        await _storage.save_session(session)
+        await self.send_text("💾 存档已保存！")
+        return True, "已保存", 2
+
+    async def _pause(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """暂停会话"""
+        stream_id = self.message.chat_stream.stream_id
+        session = await _storage.get_session(stream_id)
+        
+        if not session:
+            return False, "⚠️ 当前没有跑团会话", 2
+        
+        session.status = "paused"
+        session.add_history("system", "跑团暂停")
+        await _storage.save_session(session)
+        await self.send_text("⏸️ 跑团已暂停，使用 /trpg resume 继续")
+        return True, "已暂停", 2
+
+    async def _resume(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """恢复会话"""
+        stream_id = self.message.chat_stream.stream_id
+        session = await _storage.get_session(stream_id)
+        
+        if not session:
+            return False, "⚠️ 当前没有跑团会话", 2
+        
+        if session.status != "paused":
+            return False, "⚠️ 会话未处于暂停状态", 2
+        
+        session.status = "active"
+        session.add_history("system", "跑团继续")
+        await _storage.save_session(session)
+        await self.send_text("▶️ 跑团继续！")
+        return True, "已继续", 2
+
+
+    # ==================== 玩家操作 ====================
+    async def _join(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """加入跑团"""
+        stream_id = self.message.chat_stream.stream_id
+        user_id = str(self.message.message_info.user_info.user_id)
+        character_name = args.strip() or "无名冒险者"
         
         session = await _storage.get_session(stream_id)
         if not session or not session.is_active():
-            await self.send_text("⚠️ 当前没有进行中的跑团会话")
+            await self.send_text("⚠️ 当前没有进行中的跑团")
             return False, "无会话", 0
         
-        # 检查图片生成是否启用
+        existing = await _storage.get_player(stream_id, user_id)
+        if existing:
+            await self.send_text(f"⚠️ 你已经以 {existing.character_name} 的身份加入了！")
+            return False, "已加入", 0
+        
+        player = await _storage.create_player(stream_id, user_id, character_name)
+        session.add_history("system", f"{character_name} 加入了冒险", user_id=user_id)
+        await _storage.save_session(session)
+        
+        await self.send_text(f"""🎭 欢迎 {character_name} 加入冒险！
+
+{player.get_character_sheet()}
+
+使用 /trpg pc set [属性] [值] 自定义角色""")
+        return True, f"{character_name} 加入", 2
+
+    async def _pc(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """角色管理"""
+        stream_id = self.message.chat_stream.stream_id
+        user_id = str(self.message.message_info.user_info.user_id)
+        
+        player = await _storage.get_player(stream_id, user_id)
+        if not player:
+            await self.send_text("⚠️ 你还没有加入跑团！使用 /trpg join [角色名]")
+            return False, "未加入", 0
+        
+        parts = args.split(maxsplit=2)
+        action = parts[0].lower() if parts else "show"
+        
+        if action == "show" or not action:
+            await self.send_text(player.get_character_sheet())
+            return True, None, 2
+        
+        elif action == "set" and len(parts) >= 3:
+            attr_name, attr_value = parts[1], parts[2]
+            if player.attributes.set_attribute(attr_name, int(attr_value)):
+                await _storage.save_player(player)
+                await self.send_text(f"✅ 已将 {attr_name} 设置为 {attr_value}")
+                return True, None, 2
+            await self.send_text(f"⚠️ 未知属性: {attr_name}")
+            return False, "未知属性", 0
+        
+        elif action == "leave":
+            name = player.character_name
+            await _storage.delete_player(stream_id, user_id)
+            await self.send_text(f"👋 {name} 离开了冒险...")
+            return True, "离开", 2
+        
+        await self.send_text("用法: /trpg pc [show|set 属性 值|leave]")
+        return False, "格式错误", 0
+
+    async def _hp(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """修改HP"""
+        stream_id = self.message.chat_stream.stream_id
+        user_id = str(self.message.message_info.user_info.user_id)
+        
+        player = await _storage.get_player(stream_id, user_id)
+        if not player:
+            await self.send_text("⚠️ 你还没有加入跑团！")
+            return False, "未加入", 0
+        
+        try:
+            amount = int(args) if args else 0
+        except ValueError:
+            await self.send_text("⚠️ 请输入有效数值，如 /trpg hp +5 或 /trpg hp -3")
+            return False, "无效数值", 0
+        
+        old_hp, new_hp = player.modify_hp(amount)
+        await _storage.save_player(player)
+        
+        change = f"+{amount}" if amount > 0 else str(amount)
+        status = " 💀 倒下了！" if new_hp <= 0 else ""
+        await self.send_text(f"❤️ HP: {old_hp} → {new_hp}/{player.hp_max} ({change}){status}")
+        return True, None, 2
+
+    async def _mp(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """修改MP"""
+        stream_id = self.message.chat_stream.stream_id
+        user_id = str(self.message.message_info.user_info.user_id)
+        
+        player = await _storage.get_player(stream_id, user_id)
+        if not player:
+            await self.send_text("⚠️ 你还没有加入跑团！")
+            return False, "未加入", 0
+        
+        try:
+            amount = int(args) if args else 0
+        except ValueError:
+            await self.send_text("⚠️ 请输入有效数值")
+            return False, "无效数值", 0
+        
+        old_mp, new_mp = player.modify_mp(amount)
+        await _storage.save_player(player)
+        
+        change = f"+{amount}" if amount > 0 else str(amount)
+        await self.send_text(f"💙 MP: {old_mp} → {new_mp}/{player.mp_max} ({change})")
+        return True, None, 2
+
+
+    # ==================== 背包系统 ====================
+    async def _inventory(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """背包管理"""
+        stream_id = self.message.chat_stream.stream_id
+        user_id = str(self.message.message_info.user_info.user_id)
+        
+        player = await _storage.get_player(stream_id, user_id)
+        if not player:
+            await self.send_text("⚠️ 你还没有加入跑团！")
+            return False, "未加入", 0
+        
+        if not args:
+            await self.send_text(player.get_inventory_display())
+            return True, None, 2
+        
+        parts = args.split(maxsplit=2)
+        action = parts[0].lower()
+        
+        # 解析物品名和数量
+        item_args = " ".join(parts[1:]) if len(parts) > 1 else ""
+        item_name = item_args
+        quantity = 1
+        
+        if item_args:
+            item_parts = item_args.rsplit(None, 1)
+            if len(item_parts) == 2 and item_parts[1].isdigit():
+                item_name = item_parts[0]
+                quantity = int(item_parts[1])
+        
+        if action == "add" and item_name:
+            player.add_item(item_name, quantity)
+            await _storage.save_player(player)
+            await self.send_text(f"✅ 获得了 {item_name} x{quantity}")
+            return True, None, 2
+        
+        elif action in ("rm", "remove") and item_name:
+            if player.remove_item(item_name, quantity):
+                await _storage.save_player(player)
+                await self.send_text(f"✅ 移除了 {item_name} x{quantity}")
+                return True, None, 2
+            await self.send_text(f"⚠️ 背包中没有 {item_name}")
+            return False, "物品不存在", 0
+        
+        elif action == "use" and item_name:
+            if player.get_item(item_name):
+                player.remove_item(item_name, 1)
+                await _storage.save_player(player)
+                await self.send_text(f"✨ 使用了 {item_name}！")
+                return True, None, 2
+            await self.send_text(f"⚠️ 背包中没有 {item_name}")
+            return False, "物品不存在", 0
+        
+        await self.send_text("用法: /trpg inv [add|rm|use] [物品] [数量]")
+        return False, "格式错误", 0
+
+    # ==================== 骰子系统 ====================
+    async def _roll(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """掷骰子"""
+        if not _dice_service:
+            return False, "骰子服务未初始化", 0
+        
+        expression = args.strip() or "d20"
+        
+        try:
+            result = _dice_service.roll(expression)
+            await self.send_text(result.get_display())
+            
+            # 记录到历史
+            stream_id = self.message.chat_stream.stream_id
+            session = await _storage.get_session(stream_id)
+            if session and session.is_active():
+                user_id = str(self.message.message_info.user_info.user_id)
+                player = await _storage.get_player(stream_id, user_id)
+                session.add_history(
+                    "dice", f"{expression} = {result.total}",
+                    user_id=user_id,
+                    character_name=player.character_name if player else None,
+                    extra_data={"rolls": result.rolls, "total": result.total}
+                )
+                await _storage.save_session(session)
+            
+            return True, None, 2
+        except Exception as e:
+            logger.error(f"掷骰子失败: {e}")
+            await self.send_text(f"⚠️ 骰子表达式无效: {expression}")
+            return False, str(e), 0
+
+
+    # ==================== DM 控制 ====================
+    async def _dm(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """DM 控制命令"""
+        if not _dm_engine:
+            return False, "DM引擎未初始化", 0
+        
+        stream_id = self.message.chat_stream.stream_id
+        session = await _storage.get_session(stream_id)
+        
+        if not session:
+            await self.send_text("⚠️ 当前没有跑团会话")
+            return False, "无会话", 0
+        
+        parts = args.split(maxsplit=1)
+        action = parts[0].lower() if parts else ""
+        value = parts[1] if len(parts) > 1 else ""
+        
+        if action == "time" and value:
+            session.world_state.time_of_day = value
+            session.add_history("system", f"时间变为: {value}")
+            await _storage.save_session(session)
+            await self.send_text(f"🕐 时间: {value}")
+            return True, None, 2
+        
+        elif action == "weather" and value:
+            session.world_state.weather = value
+            session.add_history("system", f"天气变为: {value}")
+            await _storage.save_session(session)
+            await self.send_text(f"🌤️ 天气: {value}")
+            return True, None, 2
+        
+        elif action == "location" and value:
+            session.world_state.location = value
+            session.add_history("system", f"场景转换: {value}")
+            await _storage.save_session(session)
+            await self.send_text(f"📍 位置: {value}")
+            return True, None, 2
+        
+        elif action == "npc" and value:
+            npc_parts = value.split(maxsplit=1)
+            npc_name = npc_parts[0]
+            npc_action = npc_parts[1] if len(npc_parts) > 1 else ""
+            
+            if npc_name not in session.npcs:
+                session.add_npc(npc_name)
+            
+            if npc_action:
+                response = await _dm_engine.generate_npc_dialogue(session, npc_name, npc_action)
+                session.add_history("dm", response)
+                await _storage.save_session(session)
+                await self.send_text(response)
+            else:
+                await self.send_text(f"✅ NPC {npc_name} 已添加")
+            return True, None, 2
+        
+        elif action == "event" and value:
+            session.add_history("dm", f"[事件] {value}")
+            await _storage.save_session(session)
+            await self.send_text(f"⚡ 事件: {value}")
+            return True, None, 2
+        
+        elif action == "describe":
+            description = await _dm_engine.describe_environment(session)
+            session.add_history("dm", description)
+            await _storage.save_session(session)
+            await self.send_text(description)
+            return True, None, 2
+        
+        await self.send_text("""🎮 DM命令:
+/trpg dm time [时间]
+/trpg dm weather [天气]
+/trpg dm location [位置]
+/trpg dm npc [名称] [动作]
+/trpg dm event [描述]
+/trpg dm describe""")
+        return True, None, 2
+
+    # ==================== 存档系统 ====================
+    async def _slot(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """存档插槽管理"""
+        stream_id = self.message.chat_stream.stream_id
+        
+        parts = args.split()
+        action = parts[0].lower() if parts else "list"
+        slot_num = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+        
+        if action == "list":
+            slots = await _storage.list_save_slots(stream_id)
+            text = "💾 存档插槽:\n"
+            for slot in slots:
+                sn = slot["slot"]
+                if slot.get("exists"):
+                    text += f"\n📁 插槽 {sn}: {slot.get('world_name', '?')} 👥{slot.get('player_count', 0)}\n"
+                else:
+                    text += f"\n📁 插槽 {sn}: (空)\n"
+            await self.send_text(text)
+            return True, None, 2
+        
+        elif action == "save" and slot_num:
+            success, msg = await _storage.save_to_slot(stream_id, slot_num)
+            await self.send_text(f"{'💾' if success else '⚠️'} {msg}")
+            return success, msg, 2
+        
+        elif action == "load" and slot_num:
+            success, msg = await _storage.load_from_slot(stream_id, slot_num)
+            await self.send_text(f"{'💾' if success else '⚠️'} {msg}")
+            
+            # 加载成功后生成前情回顾
+            if success and _dm_engine:
+                session = await _storage.get_session(stream_id)
+                if session:
+                    try:
+                        recap = await _dm_engine.generate_recap(session)
+                        await self.send_text(recap)
+                    except Exception as e:
+                        logger.warning(f"生成前情回顾失败: {e}")
+            
+            return success, msg, 2
+        
+        elif action == "delete" and slot_num:
+            user_id = str(self.message.message_info.user_info.user_id)
+            if not _is_admin(user_id):
+                await self.send_text("⚠️ 只有管理员可以删除存档")
+                return False, "权限不足", 0
+            success, msg = await _storage.delete_slot(stream_id, slot_num)
+            await self.send_text(f"{'🗑️' if success else '⚠️'} {msg}")
+            return success, msg, 2
+        
+        await self.send_text("用法: /trpg slot [list|save|load|delete] [插槽号]")
+        return False, "格式错误", 0
+
+
+    # ==================== 模组管理 ====================
+    async def _module(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """模组管理"""
+        if not _module_loader:
+            await self.send_text("⚠️ 模组系统未初始化")
+            return False, "未初始化", 0
+        
+        parts = args.split(maxsplit=1)
+        action = parts[0].lower() if parts else "list"
+        module_id = parts[1] if len(parts) > 1 else ""
+        
+        if action == "list":
+            modules = _module_loader.list_available_modules()
+            if not modules:
+                await self.send_text("📚 暂无可用模组")
+                return True, None, 2
+            
+            genre_names = {"fantasy": "🗡️奇幻", "horror": "👻恐怖", "scifi": "🚀科幻", "modern": "🏙️现代"}
+            diff_icons = {"easy": "🟢", "normal": "🟡", "hard": "🔴"}
+            
+            by_genre = {}
+            for m in modules:
+                by_genre.setdefault(m.get("genre", "其他"), []).append(m)
+            
+            text = "📚 可用模组:\n"
+            for genre, mods in by_genre.items():
+                text += f"\n{genre_names.get(genre, genre)}:\n"
+                for m in mods:
+                    text += f"  {diff_icons.get(m.get('difficulty'), '⚪')} {m['name']} ({m['id']})\n"
+            
+            text += "\n使用 /trpg mod info [ID] 查看详情"
+            await self.send_text(text)
+            return True, None, 2
+        
+        elif action == "info" and module_id:
+            info = _module_loader.get_module_info(module_id)
+            if not info:
+                await self.send_text(f"⚠️ 未找到模组: {module_id}")
+                return False, "模组不存在", 0
+            
+            mi = info["info"]
+            diff_text = {"easy": "简单🟢", "normal": "普通🟡", "hard": "困难🔴"}.get(mi["difficulty"], mi["difficulty"])
+            
+            await self.send_text(f"""📚 {mi['name']}
+
+📝 {mi['description']}
+
+📊 作者: {mi['author']} | 类型: {mi['genre']}
+🎯 难度: {diff_text} | 👥 {mi['player_count']} | ⏱️ {mi['duration']}
+🏷️ {', '.join(mi['tags'])}
+
+🌍 世界观: {info['world_name']}
+👥 NPC: {info['npc_count']} | 📍 地点: {info['location_count']}
+
+使用 /trpg start {module_id} 开始""")
+            return True, None, 2
+        
+        await self.send_text("用法: /trpg mod [list|info ID]")
+        return False, "格式错误", 0
+
+    # ==================== 世界观设定 ====================
+    async def _lore(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """世界观设定管理"""
+        stream_id = self.message.chat_stream.stream_id
+        session = await _storage.get_session(stream_id)
+        
+        if not session:
+            await self.send_text("⚠️ 当前没有跑团会话")
+            return False, "无会话", 0
+        
+        parts = args.split(maxsplit=1)
+        action = parts[0].lower() if parts else ""
+        content = parts[1] if len(parts) > 1 else ""
+        
+        if action == "add" and content:
+            await _storage.add_lore(stream_id, content)
+            await self.send_text(f"📚 已添加设定:\n{content}")
+            return True, None, 2
+        
+        elif action == "search" and content:
+            results = await _storage.search_lore(stream_id, content)
+            if results:
+                text = "📚 搜索结果:\n" + "\n".join([f"• {r}" for r in results[:5]])
+            else:
+                text = f"📚 未找到与 '{content}' 相关的设定"
+            await self.send_text(text)
+            return True, None, 2
+        
+        # 显示所有设定
+        lore = await _storage.get_lore(stream_id)
+        if lore:
+            text = "📚 世界观设定:\n" + "\n".join([f"• {l}" for l in lore[:10]])
+            if len(lore) > 10:
+                text += f"\n... 还有 {len(lore) - 10} 条"
+        else:
+            text = "📚 暂无设定\n使用 /trpg lore add [内容] 添加"
+        await self.send_text(text)
+        return True, None, 2
+
+
+    # ==================== 场景图片 ====================
+    async def _scene(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """生成场景图片"""
+        stream_id = self.message.chat_stream.stream_id
+        session = await _storage.get_session(stream_id)
+        
+        if not session or not session.is_active():
+            await self.send_text("⚠️ 当前没有跑团会话")
+            return False, "无会话", 0
+        
         image_config = _plugin_config.get("image", {})
         if not image_config.get("enabled", False):
-            await self.send_text("⚠️ 场景图片生成功能未启用\n请在 config.toml 中配置 [image] 节")
+            await self.send_text("⚠️ 场景图片功能未启用")
             return False, "功能未启用", 0
         
-        await self.send_text("🎨 正在生成场景图片，请稍候...")
+        await self.send_text("🎨 正在生成场景图片...")
         
         try:
             from ..services.image_generator import ImageGenerator
-            
             generator = ImageGenerator(_plugin_config)
-            success, result = await generator.generate_scene_image(session, context)
+            success, result = await generator.generate_scene_image(session, args)
             
             if success:
-                # 发送图片
                 await self.send_image_base64(result)
                 session.add_history("system", "生成了场景图片")
                 await _storage.save_session(session)
                 return True, "图片生成成功", 2
-            else:
-                await self.send_text(f"⚠️ 图片生成失败: {result}")
-                return False, result, 0
-                
+            
+            await self.send_text(f"⚠️ 生成失败: {result}")
+            return False, result, 0
         except Exception as e:
             logger.error(f"生成场景图片失败: {e}")
-            await self.send_text(f"⚠️ 图片生成失败: {e}")
+            await self.send_text(f"⚠️ 生成失败: {e}")
             return False, str(e), 0
 
-
-class AdminJoinConfirmCommand(BaseCommand):
-    """管理员确认玩家加入命令"""
-    
-    command_name = "admin_join_confirm"
-    command_description = "确认/拒绝玩家加入请求"
-    command_pattern = r"^/confirm(?:\s+(accept|reject))?(?:\s+(\d+))?$"
-
-    async def execute(self) -> Tuple[bool, Optional[str], int]:
-        if not _storage:
-            return False, "插件未正确初始化", 0
-        
+    # ==================== 管理员确认 ====================
+    async def _confirm(self, args: str) -> Tuple[bool, Optional[str], int]:
+        """确认/拒绝玩家加入请求"""
         stream_id = self.message.chat_stream.stream_id
         user_id = str(self.message.message_info.user_info.user_id)
         
-        # 检查权限
         if not _is_admin(user_id):
             await self.send_text("⚠️ 只有管理员可以确认加入请求")
             return False, "权限不足", 0
         
-        action = self.matched_groups.get("1", "")
-        target_user = self.matched_groups.get("2", "")
+        parts = args.split()
+        action = parts[0].lower() if parts else ""
+        target_user = parts[1] if len(parts) > 1 else ""
         
         if not action:
-            # 显示待确认列表
             pending = _storage.get_all_pending_joins(stream_id)
             if not pending:
                 await self.send_text("📋 没有待确认的加入请求")
                 return True, None, 2
             
-            text = "📋 待确认的加入请求:\n"
+            text = "📋 待确认请求:\n"
             for uid, char_name in pending.items():
-                text += f"• {char_name} (用户ID: {uid})\n"
-            text += "\n使用 /confirm accept [用户ID] 确认\n使用 /confirm reject [用户ID] 拒绝"
+                text += f"• {char_name} (ID: {uid})\n"
+            text += "\n/trpg confirm accept [ID] 确认\n/trpg confirm reject [ID] 拒绝"
             await self.send_text(text)
             return True, None, 2
         
@@ -1009,22 +828,44 @@ class AdminJoinConfirmCommand(BaseCommand):
         
         character_name = _storage.remove_pending_join(stream_id, target_user)
         if not character_name:
-            await self.send_text(f"⚠️ 未找到用户 {target_user} 的加入请求")
+            await self.send_text(f"⚠️ 未找到用户 {target_user} 的请求")
             return False, "请求不存在", 0
         
         if action == "accept":
-            # 创建玩家
             player = await _storage.create_player(stream_id, target_user, character_name)
             session = await _storage.get_session(stream_id)
             if session:
                 session.add_history("system", f"{character_name} 加入了冒险（管理员确认）")
                 await _storage.save_session(session)
-            
-            await self.send_text(f"✅ 已确认 {character_name} 加入冒险！")
+            await self.send_text(f"✅ 已确认 {character_name} 加入！")
             return True, "已确认", 2
         
         elif action == "reject":
-            await self.send_text(f"❌ 已拒绝 {character_name} 的加入请求")
+            await self.send_text(f"❌ 已拒绝 {character_name} 的请求")
             return True, "已拒绝", 2
         
         return False, "未知操作", 0
+
+
+# ============================================================
+# 快捷命令 - 保留常用的短命令作为别名
+# ============================================================
+
+class DiceShortcut(BaseCommand):
+    """骰子快捷命令 /r"""
+    command_name = "dice_shortcut"
+    command_description = "掷骰子快捷命令"
+    command_pattern = r"^/r(?:oll)?\s+(?P<expr>.+)$"
+
+    async def execute(self) -> Tuple[bool, Optional[str], int]:
+        if not _dice_service:
+            return False, "骰子服务未初始化", 0
+        
+        expr = self.matched_groups.get("expr", "d20") or "d20"
+        try:
+            result = _dice_service.roll(expr)
+            await self.send_text(result.get_display())
+            return True, None, 2
+        except Exception as e:
+            await self.send_text(f"⚠️ 骰子表达式无效: {expr}")
+            return False, str(e), 0

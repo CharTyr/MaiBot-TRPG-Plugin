@@ -127,6 +127,77 @@ class WorldState:
 
 
 @dataclass
+class StoryContext:
+    """剧情上下文 - 用于保持叙事连贯性"""
+    # 当前章节/场景
+    current_chapter: str = ""
+    current_scene: str = ""
+    # 剧情摘要（定期更新）
+    story_summary: str = ""
+    # 关键事件列表
+    key_events: List[str] = field(default_factory=list)
+    # 未解决的谜题/线索
+    open_threads: List[str] = field(default_factory=list)
+    # 已发现的线索
+    discovered_clues: List[str] = field(default_factory=list)
+    # 剧情张力等级 (0-10)
+    tension_level: int = 3
+    # 上次生成图片的历史索引
+    last_image_history_index: int = 0
+    # 上次摘要更新的历史索引
+    last_summary_history_index: int = 0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "current_chapter": self.current_chapter,
+            "current_scene": self.current_scene,
+            "story_summary": self.story_summary,
+            "key_events": self.key_events,
+            "open_threads": self.open_threads,
+            "discovered_clues": self.discovered_clues,
+            "tension_level": self.tension_level,
+            "last_image_history_index": self.last_image_history_index,
+            "last_summary_history_index": self.last_summary_history_index,
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "StoryContext":
+        return cls(
+            current_chapter=data.get("current_chapter", ""),
+            current_scene=data.get("current_scene", ""),
+            story_summary=data.get("story_summary", ""),
+            key_events=data.get("key_events", []),
+            open_threads=data.get("open_threads", []),
+            discovered_clues=data.get("discovered_clues", []),
+            tension_level=data.get("tension_level", 3),
+            last_image_history_index=data.get("last_image_history_index", 0),
+            last_summary_history_index=data.get("last_summary_history_index", 0),
+        )
+    
+    def add_key_event(self, event: str):
+        """添加关键事件"""
+        self.key_events.append(event)
+        # 保留最近20个关键事件
+        if len(self.key_events) > 20:
+            self.key_events = self.key_events[-20:]
+    
+    def add_clue(self, clue: str):
+        """添加发现的线索"""
+        if clue not in self.discovered_clues:
+            self.discovered_clues.append(clue)
+    
+    def add_open_thread(self, thread: str):
+        """添加未解决的谜题"""
+        if thread not in self.open_threads:
+            self.open_threads.append(thread)
+    
+    def resolve_thread(self, thread: str):
+        """解决谜题"""
+        if thread in self.open_threads:
+            self.open_threads.remove(thread)
+
+
+@dataclass
 class TRPGSession:
     """跑团会话"""
     stream_id: str
@@ -139,6 +210,8 @@ class TRPGSession:
     npcs: Dict[str, NPCState] = field(default_factory=dict)
     lore: List[str] = field(default_factory=list)
     player_ids: List[str] = field(default_factory=list)
+    # 新增：剧情上下文
+    story_context: StoryContext = field(default_factory=StoryContext)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -152,6 +225,7 @@ class TRPGSession:
             "npcs": {k: v.to_dict() for k, v in self.npcs.items()},
             "lore": self.lore,
             "player_ids": self.player_ids,
+            "story_context": self.story_context.to_dict(),
         }
 
     @classmethod
@@ -159,6 +233,7 @@ class TRPGSession:
         world_state = WorldState.from_dict(data.get("world_state", {}))
         history = [HistoryEntry.from_dict(h) for h in data.get("history", [])]
         npcs = {k: NPCState.from_dict(v) for k, v in data.get("npcs", {}).items()}
+        story_context = StoryContext.from_dict(data.get("story_context", {}))
         
         return cls(
             stream_id=data["stream_id"],
@@ -171,6 +246,7 @@ class TRPGSession:
             npcs=npcs,
             lore=data.get("lore", []),
             player_ids=data.get("player_ids", []),
+            story_context=story_context,
         )
 
     def add_history(self, entry_type: str, content: str, user_id: str = None, 

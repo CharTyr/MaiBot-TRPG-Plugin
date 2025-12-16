@@ -1,0 +1,25 @@
+{
+  "user_id": "355864328",
+  "stream_id": "1bb4d5ac6e68f2c8f57234c8e76ba260",
+  "character_name": "Eric",
+  "attributes": {
+    "strength": 10,
+    "dexterity": 10,
+    "constitution": 10,
+    "intelligence": 10,
+    "wisdom": 10,
+    "charisma": 10
+  },
+  "hp_current": 20,
+  "hp_max": 20,
+  "mp_current": 10,
+  "mp_max": 10,
+  "level": 1,
+  "experience": 0,
+  "inventory": [],
+  "skills": [],
+  "notes": "",
+  "created_at": 1765896488.734723,
+  "updated_at": 1765896488.7347236,
+  "custom_data": {}
+}
