@@ -13,6 +13,9 @@ from .commands import (
     DMCommand,
     LoreCommand,
     ModuleCommand,
+    SaveSlotCommand,
+    ImageCommand,
+    AdminJoinConfirmCommand,
 )
 from .handlers import TRPGMessageHandler, TRPGStartupHandler, TRPGShutdownHandler
 from .tools import RollDiceTool, CheckPlayerStatusTool, GetWorldStateTool, ModifyPlayerStatusTool, SearchLoreTool
@@ -29,6 +32,9 @@ __all__ = [
     "DMCommand",
     "LoreCommand",
     "ModuleCommand",
+    "SaveSlotCommand",
+    "ImageCommand",
+    "AdminJoinConfirmCommand",
     # Handlers
     "TRPGMessageHandler",
     "TRPGStartupHandler",
