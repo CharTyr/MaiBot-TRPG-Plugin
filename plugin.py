@@ -13,7 +13,6 @@ MaiBot TRPG DM 跑团插件
 - 存档系统
 """
 
-import os
 from typing import List, Tuple, Type
 from pathlib import Path
 
@@ -75,13 +74,17 @@ class TRPGDMPlugin(BasePlugin):
     config_section_descriptions = {
         "plugin": "插件基本设置",
         "session": "会话管理设置",
+        "save_slots": "存档插槽设置",
         "dice": "骰子系统设置",
         "player": "玩家角色设置",
         "world": "世界状态设置",
         "dm": "DM 引擎设置",
         "permissions": "权限设置",
         "integration": "MaiBot 融合设置",
+        "multiplayer": "多人行动设置",
         "module": "模组系统设置",
+        "image": "场景图片设置",
+        "llm_models": "模型组选择",
     }
 
     # 配置 Schema 定义
@@ -89,12 +92,18 @@ class TRPGDMPlugin(BasePlugin):
         "plugin": {
             "config_version": ConfigField(type=str, default="1.2.0", description="配置文件版本"),
             "enabled": ConfigField(type=bool, default=True, description="是否启用插件"),
+            "allowed_groups": ConfigField(type=list, default=[], description="允许启用跑团的群组ID列表（空列表表示全部允许）"),
         },
         "session": {
-            "enabled_groups": ConfigField(type=list, default=[], description="允许启用跑团的群组ID列表"),
             "auto_save_interval": ConfigField(type=int, default=300, description="自动保存间隔（秒）"),
             "max_history_length": ConfigField(type=int, default=100, description="历史记录最大条数"),
             "verbose_mode": ConfigField(type=bool, default=False, description="是否显示详细日志"),
+            "allow_mid_join": ConfigField(type=bool, default=True, description="是否允许中途加入"),
+            "mid_join_require_confirm": ConfigField(type=bool, default=False, description="中途加入是否需要管理员确认"),
+        },
+        "save_slots": {
+            "max_slots": ConfigField(type=int, default=3, description="存档插槽数量（每个群组独立）"),
+            "allow_overwrite": ConfigField(type=bool, default=True, description="是否允许覆盖已有存档"),
         },
         "dice": {
             "default_dice_sides": ConfigField(type=int, default=20, description="默认骰子面数"),
@@ -103,7 +112,10 @@ class TRPGDMPlugin(BasePlugin):
             "show_individual_rolls": ConfigField(type=bool, default=True, description="是否显示每个骰子的结果"),
         },
         "player": {
-            "default_attribute_value": ConfigField(type=int, default=10, description="默认属性值"),
+            "free_points": ConfigField(type=int, default=30, description="初始自由加点点数"),
+            "base_attribute": ConfigField(type=int, default=8, description="基础属性值（加点前）"),
+            "max_attribute": ConfigField(type=int, default=18, description="单项属性最大值"),
+            "min_attribute": ConfigField(type=int, default=3, description="单项属性最小值"),
             "default_max_hp": ConfigField(type=int, default=20, description="默认最大生命值"),
             "default_max_mp": ConfigField(type=int, default=10, description="默认最大魔力值"),
             "max_inventory_size": ConfigField(type=int, default=50, description="背包最大容量"),
@@ -114,10 +126,16 @@ class TRPGDMPlugin(BasePlugin):
             "default_weather": ConfigField(type=str, default="sunny", description="默认天气"),
         },
         "dm": {
+            "use_maibot_replyer": ConfigField(type=bool, default=True, description="是否优先使用 replyer 模型"),
             "llm_temperature": ConfigField(type=float, default=0.8, description="DM响应的温度参数"),
-            "llm_max_tokens": ConfigField(type=int, default=1000, description="DM响应的最大token数"),
+            "llm_max_tokens": ConfigField(type=int, default=800, description="DM响应的最大token数"),
             "auto_narrative": ConfigField(type=bool, default=True, description="是否启用自动剧情生成"),
             "npc_style": ConfigField(type=str, default="immersive", description="NPC对话风格"),
+            "dm_personality": ConfigField(type=str, default="", description="DM 人格提示词（简短为佳）"),
+            "include_action_hints": ConfigField(type=bool, default=True, description="是否在回复中包含行动建议"),
+            "show_action_feedback": ConfigField(type=bool, default=True, description="玩家行动时是否立即反馈已接收"),
+            "max_retries": ConfigField(type=int, default=3, description="DM 响应失败最大重试次数"),
+            "retry_delay": ConfigField(type=float, default=1.0, description="重试间隔基础时间（秒）"),
         },
         "permissions": {
             "admin_users": ConfigField(type=list, default=[], description="管理员用户ID列表"),
@@ -130,10 +148,38 @@ class TRPGDMPlugin(BasePlugin):
             "block_other_plugins": ConfigField(type=bool, default=True, description="接管时是否阻止其他插件处理消息"),
             "merge_bot_personality": ConfigField(type=bool, default=True, description="是否使用MaiBot的人格设定融合DM角色"),
         },
+        "multiplayer": {
+            "batch_actions": ConfigField(type=bool, default=True, description="多人模式下是否批量处理行动"),
+            "action_collect_window": ConfigField(type=float, default=60.0, description="等待所有玩家行动的最大时间（秒）"),
+            "reminder_interval": ConfigField(type=float, default=20.0, description="提醒未行动玩家的间隔（秒）"),
+            "process_when_all_ready": ConfigField(type=bool, default=True, description="所有玩家行动后是否立即处理"),
+        },
         "module": {
             "custom_module_dir": ConfigField(type=str, default="data/modules", description="自定义模组目录"),
+            "markdown_module_dir": ConfigField(type=str, default="custom_modules", description="Markdown 模组目录"),
+            "auto_scan_markdown": ConfigField(type=bool, default=True, description="是否自动扫描 Markdown 模组"),
             "allow_pdf_import": ConfigField(type=bool, default=True, description="是否允许导入PDF模组"),
             "pdf_parse_model": ConfigField(type=str, default="utils", description="PDF解析使用的模型"),
+        },
+        "image": {
+            "enabled": ConfigField(type=bool, default=False, description="是否启用场景图片生成"),
+            "api_type": ConfigField(type=str, default="sd_api", description="生图 API 类型: openai/sd_api/gradio/novelai"),
+            "base_url": ConfigField(type=str, default="", description="生图 API 地址"),
+            "api_key": ConfigField(type=str, default="", description="生图 API 密钥（建议通过环境变量注入）"),
+            "model_name": ConfigField(type=str, default="", description="模型名称（OpenAI兼容需要）"),
+            "default_size_preset": ConfigField(type=str, default="landscape", description="默认尺寸预设"),
+            "custom_width": ConfigField(type=int, default=0, description="自定义宽度（0表示使用预设）"),
+            "custom_height": ConfigField(type=int, default=0, description="自定义高度（0表示使用预设）"),
+            "auto_generate": ConfigField(type=bool, default=False, description="是否自动生成场景图片"),
+            "auto_generate_interval": ConfigField(type=int, default=10, description="自动生成触发间隔（条消息）"),
+            "climax_auto_image": ConfigField(type=bool, default=True, description="高潮时是否自动生成图片"),
+            "climax_min_interval": ConfigField(type=int, default=5, description="高潮画图最小间隔（历史条数）"),
+        },
+        "llm_models": {
+            "dm_response_model": ConfigField(type=str, default="replyer", description="DM 响应使用的模型组"),
+            "image_prompt_model": ConfigField(type=str, default="planner", description="图片提示词生成使用的模型组"),
+            "pdf_parse_model": ConfigField(type=str, default="utils", description="PDF 解析使用的模型组"),
+            "intent_model": ConfigField(type=str, default="planner", description="意图理解使用的模型组"),
         },
     }
 
@@ -174,8 +220,11 @@ class TRPGDMPlugin(BasePlugin):
         # 初始化 DM 引擎
         self._dm_engine = DMEngine(config)
         
-        # 初始化模组加载器
-        self._module_loader = ModuleLoader(self.data_dir / "modules")
+        # 初始化模组加载器（支持配置自定义目录）
+        module_config = config.get("module", {})
+        custom_module_dir = module_config.get("custom_module_dir", "data/modules")
+        plugin_dir = Path(__file__).parent
+        self._module_loader = ModuleLoader(plugin_dir / custom_module_dir, config=config)
         
         # 注入服务和配置到组件
         set_command_services(self._storage, self._dice_service, self._dm_engine, self._module_loader)

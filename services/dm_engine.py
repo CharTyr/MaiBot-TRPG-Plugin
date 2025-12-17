@@ -91,20 +91,30 @@ class DMEngine:
         self.climax_image_enabled = self.image_config.get("climax_auto_image", True)
         
         # 状态变化解析模式
+        uid = r"uid\s*[:=]\s*([^\s\]]+)"
         self.state_change_patterns = {
-            # HP 变化: [HP -5] [HP +10] [生命值 -3]
+            # 带 uid 的玩家状态变化（多人回合必须使用）
+            "hp_scoped": re.compile(rf'\[{uid}\s+(?:HP|生命值?|hp)\s*([+-]?\d+)\]', re.IGNORECASE),
+            "mp_scoped": re.compile(rf'\[{uid}\s+(?:MP|魔力值?|mp)\s*([+-]?\d+)\]', re.IGNORECASE),
+            "item_gain_scoped": re.compile(rf'\[{uid}\s+获得\s+([^\]]+?)(?:\s*[xX×]\s*(\d+))?\]'),
+            "item_loss_scoped": re.compile(rf'\[{uid}\s+(?:失去|消耗|使用)\s+([^\]]+?)(?:\s*[xX×]\s*(\d+))?\]'),
+            "attr_scoped": re.compile(
+                rf'\[{uid}\s*(力量|敏捷|体质|智力|感知|魅力|STR|DEX|CON|INT|WIS|CHA)\s*([+-]?\d+)\]',
+                re.IGNORECASE,
+            ),
+
+            # 兼容旧格式（单人回合默认作用于当前玩家）
             "hp": re.compile(r'\[(?:HP|生命值?|hp)\s*([+-]?\d+)\]', re.IGNORECASE),
-            # MP 变化: [MP -5] [MP +10] [魔力值 -3]
             "mp": re.compile(r'\[(?:MP|魔力值?|mp)\s*([+-]?\d+)\]', re.IGNORECASE),
-            # 获得物品: [获得 钥匙] [获得 金币 x10]
             "item_gain": re.compile(r'\[获得\s+([^\]]+?)(?:\s*[xX×]\s*(\d+))?\]'),
-            # 失去物品: [失去 钥匙] [消耗 药水 x2]
             "item_loss": re.compile(r'\[(?:失去|消耗|使用)\s+([^\]]+?)(?:\s*[xX×]\s*(\d+))?\]'),
-            # 属性变化: [力量 +2] [敏捷 -1]
-            "attr": re.compile(r'\[(?:力量|敏捷|体质|智力|感知|魅力|STR|DEX|CON|INT|WIS|CHA)\s*([+-]?\d+)\]', re.IGNORECASE),
-            # 位置变化: [移动到 图书馆] [进入 地下室]
+            "attr": re.compile(
+                r'\[(力量|敏捷|体质|智力|感知|魅力|STR|DEX|CON|INT|WIS|CHA)\s*([+-]?\d+)\]',
+                re.IGNORECASE,
+            ),
+
+            # 会话公共变化
             "location": re.compile(r'\[(?:移动到|进入|来到|到达)\s+([^\]]+)\]'),
-            # 时间变化: [时间 夜晚] [时间流逝 2小时]
             "time": re.compile(r'\[时间\s+([^\]]+)\]'),
         }
         
@@ -139,59 +149,78 @@ class DMEngine:
         - [移动到 图书馆] - 位置变化
         """
         changes = GameStateChange()
-        user_id = player.user_id if player else "unknown"
-        
-        # 解析 HP 变化
-        hp_matches = self.state_change_patterns["hp"].findall(dm_response)
-        for match in hp_matches:
-            delta = int(match)
-            changes.hp_changes[user_id] = changes.hp_changes.get(user_id, 0) + delta
-        
-        # 解析 MP 变化
-        mp_matches = self.state_change_patterns["mp"].findall(dm_response)
-        for match in mp_matches:
-            delta = int(match)
-            changes.mp_changes[user_id] = changes.mp_changes.get(user_id, 0) + delta
-        
-        # 解析获得物品
-        item_gain_matches = self.state_change_patterns["item_gain"].findall(dm_response)
-        for match in item_gain_matches:
-            item_name = match[0].strip()
-            qty = int(match[1]) if match[1] else 1
-            if user_id not in changes.item_gains:
-                changes.item_gains[user_id] = []
-            changes.item_gains[user_id].append((item_name, qty))
-        
-        # 解析失去物品
-        item_loss_matches = self.state_change_patterns["item_loss"].findall(dm_response)
-        for match in item_loss_matches:
-            item_name = match[0].strip()
-            qty = int(match[1]) if match[1] else 1
-            if user_id not in changes.item_losses:
-                changes.item_losses[user_id] = []
-            changes.item_losses[user_id].append((item_name, qty))
-        
-        # 解析属性变化
-        attr_pattern = re.compile(
-            r'\[(力量|敏捷|体质|智力|感知|魅力|STR|DEX|CON|INT|WIS|CHA)\s*([+-]?\d+)\]', 
-            re.IGNORECASE
-        )
-        attr_matches = attr_pattern.findall(dm_response)
-        for attr_name, delta_str in attr_matches:
-            delta = int(delta_str)
-            if user_id not in changes.attr_changes:
-                changes.attr_changes[user_id] = {}
-            # 标准化属性名
-            attr_map = {
-                "力量": "strength", "str": "strength",
-                "敏捷": "dexterity", "dex": "dexterity",
-                "体质": "constitution", "con": "constitution",
-                "智力": "intelligence", "int": "intelligence",
-                "感知": "wisdom", "wis": "wisdom",
-                "魅力": "charisma", "cha": "charisma",
-            }
+        default_user_id = str(player.user_id) if player else None
+
+        def add_hp(uid: str, delta: int):
+            changes.hp_changes[uid] = changes.hp_changes.get(uid, 0) + delta
+
+        def add_mp(uid: str, delta: int):
+            changes.mp_changes[uid] = changes.mp_changes.get(uid, 0) + delta
+
+        def add_item_gain(uid: str, item_name: str, qty: int):
+            changes.item_gains.setdefault(uid, []).append((item_name, qty))
+
+        def add_item_loss(uid: str, item_name: str, qty: int):
+            changes.item_losses.setdefault(uid, []).append((item_name, qty))
+
+        def add_attr(uid: str, std_attr: str, delta: int):
+            changes.attr_changes.setdefault(uid, {})
+            changes.attr_changes[uid][std_attr] = changes.attr_changes[uid].get(std_attr, 0) + delta
+
+        attr_map = {
+            "力量": "strength", "str": "strength",
+            "敏捷": "dexterity", "dex": "dexterity",
+            "体质": "constitution", "con": "constitution",
+            "智力": "intelligence", "int": "intelligence",
+            "感知": "wisdom", "wis": "wisdom",
+            "魅力": "charisma", "cha": "charisma",
+        }
+
+        # 1) 解析带 uid 的标签（多人回合）
+        for uid, delta_str in self.state_change_patterns["hp_scoped"].findall(dm_response):
+            add_hp(str(uid), int(delta_str))
+
+        for uid, delta_str in self.state_change_patterns["mp_scoped"].findall(dm_response):
+            add_mp(str(uid), int(delta_str))
+
+        for uid, item_name, qty_str in self.state_change_patterns["item_gain_scoped"].findall(dm_response):
+            add_item_gain(str(uid), item_name.strip(), int(qty_str) if qty_str else 1)
+
+        for uid, item_name, qty_str in self.state_change_patterns["item_loss_scoped"].findall(dm_response):
+            add_item_loss(str(uid), item_name.strip(), int(qty_str) if qty_str else 1)
+
+        for uid, attr_name, delta_str in self.state_change_patterns["attr_scoped"].findall(dm_response):
             std_attr = attr_map.get(attr_name.lower(), attr_name.lower())
-            changes.attr_changes[user_id][std_attr] = delta
+            add_attr(str(uid), std_attr, int(delta_str))
+
+        # 2) 解析旧格式（单人回合，默认作用于当前玩家）
+        if default_user_id:
+            for delta_str in self.state_change_patterns["hp"].findall(dm_response):
+                add_hp(default_user_id, int(delta_str))
+
+            for delta_str in self.state_change_patterns["mp"].findall(dm_response):
+                add_mp(default_user_id, int(delta_str))
+
+            for item_name, qty_str in self.state_change_patterns["item_gain"].findall(dm_response):
+                add_item_gain(default_user_id, item_name.strip(), int(qty_str) if qty_str else 1)
+
+            for item_name, qty_str in self.state_change_patterns["item_loss"].findall(dm_response):
+                add_item_loss(default_user_id, item_name.strip(), int(qty_str) if qty_str else 1)
+
+            for attr_name, delta_str in self.state_change_patterns["attr"].findall(dm_response):
+                std_attr = attr_map.get(attr_name.lower(), attr_name.lower())
+                add_attr(default_user_id, std_attr, int(delta_str))
+        else:
+            if (
+                self.state_change_patterns["hp"].search(dm_response)
+                or self.state_change_patterns["mp"].search(dm_response)
+                or self.state_change_patterns["item_gain"].search(dm_response)
+                or self.state_change_patterns["item_loss"].search(dm_response)
+                or self.state_change_patterns["attr"].search(dm_response)
+            ):
+                logger.warning(
+                    "[DMEngine] 检测到未带 uid 的状态标签，但未指定 player；已忽略这些标签（请在多人回合使用 uid 标签）"
+                )
         
         # 解析位置变化
         location_matches = self.state_change_patterns["location"].findall(dm_response)
@@ -306,6 +335,11 @@ class DMEngine:
         """从响应中移除状态变化标签，保留纯叙述文本"""
         # 移除所有 [...] 格式的状态标签
         patterns = [
+            r'\[uid\s*[:=]\s*[^\s\]]+\s+(?:HP|生命值?|hp)\s*[+-]?\d+\]',
+            r'\[uid\s*[:=]\s*[^\s\]]+\s+(?:MP|魔力值?|mp)\s*[+-]?\d+\]',
+            r'\[uid\s*[:=]\s*[^\s\]]+\s+获得\s+[^\]]+\]',
+            r'\[uid\s*[:=]\s*[^\s\]]+\s+(?:失去|消耗|使用)\s+[^\]]+\]',
+            r'\[uid\s*[:=]\s*[^\s\]]+\s*(?:力量|敏捷|体质|智力|感知|魅力|STR|DEX|CON|INT|WIS|CHA)\s*[+-]?\d+\]',
             r'\[(?:HP|生命值?|hp)\s*[+-]?\d+\]',
             r'\[(?:MP|魔力值?|mp)\s*[+-]?\d+\]',
             r'\[获得\s+[^\]]+\]',
@@ -457,6 +491,19 @@ class DMEngine:
         
         return "\n\n".join(parts) if parts else ""
 
+    def _select_model_config(
+        self,
+        models: Dict[str, Any],
+        preferred_key: Optional[str],
+        fallback_keys: List[str],
+    ) -> Any:
+        if preferred_key and preferred_key in models:
+            return models[preferred_key]
+        for key in fallback_keys:
+            if key in models:
+                return models[key]
+        return next(iter(models.values()))
+
     async def generate_dm_response(
         self,
         session: "TRPGSession",
@@ -478,12 +525,15 @@ class DMEngine:
             if not models:
                 logger.error("[DMEngine] 没有可用的 LLM 模型")
                 return self._get_fallback_response(player_message)
-            
+
+            llm_models_cfg = self.config.get("llm_models", {})
+            preferred = llm_models_cfg.get("dm_response_model") if isinstance(llm_models_cfg, dict) else None
+
             # 优先使用 replyer 模型（与 MaiBot 主程序一致）
             if self.use_maibot_replyer:
-                model_config = models.get("replyer") or models.get("normal_chat") or next(iter(models.values()))
+                model_config = self._select_model_config(models, preferred, ["replyer", "normal_chat", "utils"])
             else:
-                model_config = models.get("normal_chat") or models.get("utils") or next(iter(models.values()))
+                model_config = self._select_model_config(models, preferred, ["normal_chat", "utils", "replyer"])
             
             success, response, reasoning, model_name = await llm_api.generate_with_model(
                 prompt=prompt,
@@ -529,11 +579,13 @@ class DMEngine:
             if not models:
                 logger.error("[DMEngine] 没有可用的 LLM 模型")
                 return self._get_batch_fallback_response(actions)
-            
+
+            llm_models_cfg = self.config.get("llm_models", {})
+            preferred = llm_models_cfg.get("dm_response_model") if isinstance(llm_models_cfg, dict) else None
             if self.use_maibot_replyer:
-                model_config = models.get("replyer") or models.get("normal_chat") or next(iter(models.values()))
+                model_config = self._select_model_config(models, preferred, ["replyer", "normal_chat", "utils"])
             else:
-                model_config = models.get("normal_chat") or next(iter(models.values()))
+                model_config = self._select_model_config(models, preferred, ["normal_chat", "utils", "replyer"])
             
             # 多人响应需要更多 token
             batch_max_tokens = min(self.max_tokens * 2, 1500)
@@ -583,6 +635,12 @@ class DMEngine:
         for act in actions:
             action_lines.append(f"• {act['character_name']}: {act['action']}")
         actions_text = "\n".join(action_lines)
+
+        # uid 映射（用于多人回合状态标签）
+        uid_lines = []
+        for act in actions:
+            uid_lines.append(f"- uid:{act['user_id']} = {act['character_name']}")
+        uid_map_text = "\n".join(uid_lines)
         
         # 世界状态
         world = session.world_state
@@ -612,6 +670,9 @@ class DMEngine:
 {actions_text}
 ---
 
+本轮玩家ID映射（用于状态变化标签）:
+{uid_map_text}
+
 请作为DM统一回应所有玩家的行动。要求:
 1. 按顺序描述每位玩家行动的结果（每人30-50字）
 2. 描述行动之间的互动和影响
@@ -619,6 +680,18 @@ class DMEngine:
 4. 保持叙事连贯，像在讲述一个场景
 5. 最后简短描述场景的整体变化
 6. 如需检定，指出哪位玩家需要什么检定
+
+【状态变化标记（多人回合必须带 uid）】
+当某位玩家状态发生变化时，必须在叙述中使用以下标签（系统会自动解析并应用）：
+- HP变化: [uid:123 HP -5] 或 [uid:123 HP +10]
+- MP变化: [uid:123 MP -3] 或 [uid:123 MP +5]
+- 获得物品: [uid:123 获得 物品名] 或 [uid:123 获得 物品名 x数量]
+- 失去物品: [uid:123 失去 物品名] 或 [uid:123 消耗 物品名 x数量]
+- 属性变化: [uid:123 力量 +2] 或 [uid:123 敏捷 -1]
+
+会话公共变化（不需要 uid）：
+- 位置变化: [移动到 新位置名]
+- 时间变化: [时间 夜晚]
 
 格式示例:
 【角色A】行动结果描述...
@@ -812,7 +885,10 @@ HP: {player.hp_current}/{player.hp_max} | MP: {player.mp_current}/{player.mp_max
             models = llm_api.get_available_models()
             if not models:
                 return f"【{npc_name}】..."
-            model_config = models.get("replyer") or models.get("normal_chat") or next(iter(models.values()))
+
+            llm_models_cfg = self.config.get("llm_models", {})
+            preferred = llm_models_cfg.get("dm_response_model") if isinstance(llm_models_cfg, dict) else None
+            model_config = self._select_model_config(models, preferred, ["replyer", "normal_chat", "utils"])
             
             success, response, _, _ = await llm_api.generate_with_model(
                 prompt=prompt,
@@ -846,7 +922,10 @@ HP: {player.hp_current}/{player.hp_max} | MP: {player.mp_current}/{player.mp_max
             models = llm_api.get_available_models()
             if not models:
                 return f"🌍 {world.get_description()}"
-            model_config = models.get("normal_chat") or next(iter(models.values()))
+
+            llm_models_cfg = self.config.get("llm_models", {})
+            preferred = llm_models_cfg.get("dm_response_model") if isinstance(llm_models_cfg, dict) else None
+            model_config = self._select_model_config(models, preferred, ["normal_chat", "replyer", "utils"])
             
             success, response, _, _ = await llm_api.generate_with_model(
                 prompt=prompt,
@@ -880,7 +959,10 @@ HP: {player.hp_current}/{player.hp_max} | MP: {player.mp_current}/{player.mp_max
             models = llm_api.get_available_models()
             if not models:
                 return f"欢迎来到{session.world_name}！冒险即将开始..."
-            model_config = models.get("normal_chat") or next(iter(models.values()))
+
+            llm_models_cfg = self.config.get("llm_models", {})
+            preferred = llm_models_cfg.get("dm_response_model") if isinstance(llm_models_cfg, dict) else None
+            model_config = self._select_model_config(models, preferred, ["normal_chat", "replyer", "utils"])
             
             success, response, _, _ = await llm_api.generate_with_model(
                 prompt=prompt,
@@ -1004,7 +1086,9 @@ HP: {player.hp_current}/{player.hp_max} | MP: {player.mp_current}/{player.mp_max
         try:
             models = llm_api.get_available_models()
             if models:
-                model_config = models.get("normal_chat") or next(iter(models.values()))
+                llm_models_cfg = self.config.get("llm_models", {})
+                preferred = llm_models_cfg.get("dm_response_model") if isinstance(llm_models_cfg, dict) else None
+                model_config = self._select_model_config(models, preferred, ["normal_chat", "replyer", "utils"])
                 
                 prompt = f"""请根据以下跑团历史记录，生成一段简洁的前情回顾（50-80字）:
 

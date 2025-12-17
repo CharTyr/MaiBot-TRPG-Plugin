@@ -4,6 +4,7 @@ TRPG DM 插件事件处理器
 """
 
 import asyncio
+import re
 import time
 from typing import Tuple, Optional, Dict, List, TYPE_CHECKING
 from src.plugin_system import (
@@ -230,8 +231,9 @@ class TRPGMessageHandler(BaseEventHandler):
         # 命令消息处理
         if plain_text.startswith("/"):
             # 检查是否是跑团相关命令 - 统一使用 /trpg 前缀，保留 /r 快捷命令
-            trpg_commands = ["/trpg", "/r ", "/roll "]
-            is_trpg_command = any(plain_text.startswith(cmd) for cmd in trpg_commands)
+            is_trpg_command = bool(re.match(r"^/(?:trpg)(?:\s|$)", plain_text, re.IGNORECASE)) or bool(
+                re.match(r"^/(?:r|roll)(?:\s|$)", plain_text, re.IGNORECASE)
+            )
             
             integration_config = _plugin_config.get("integration", {})
             takeover = integration_config.get("takeover_message", True)
@@ -416,10 +418,13 @@ class TRPGMessageHandler(BaseEventHandler):
             )
         
         # 检查是否所有人都已行动
-        if all_ready:
+        process_when_all_ready = multiplayer_config.get("process_when_all_ready", True)
+        if all_ready and process_when_all_ready:
             logger.info(f"[TRPGHandler] 多人模式：所有 {total_count} 名玩家已行动，立即处理")
             collector.cancel_all_tasks()
             await self._process_collected_actions(stream_id, timeout=False)
+        elif all_ready:
+            logger.info(f"[TRPGHandler] 多人模式：所有 {total_count} 名玩家已行动，但配置为等待超时再处理")
 
     async def _process_collected_actions(self, stream_id: str, timeout: bool = False):
         """处理收集到的所有行动"""
@@ -623,17 +628,13 @@ class TRPGMessageHandler(BaseEventHandler):
                     await asyncio.sleep(retry_delay * (2 ** attempt))
         
         if response:
-            # 解析所有玩家的状态变化
-            all_change_summaries = []
-            for act in actions:
-                act_player = await _storage.get_player(stream_id, act["user_id"])
-                state_changes = _dm_engine.parse_state_changes(response, act_player)
-                if state_changes.has_changes():
-                    change_summary = await _dm_engine.apply_state_changes(
-                        state_changes, session, _storage
-                    )
-                    if change_summary:
-                        all_change_summaries.append(change_summary)
+            # 解析并应用状态变化（多人回合应使用 uid 标签）
+            state_changes = _dm_engine.parse_state_changes(response, player=None)
+            change_summary = ""
+            if state_changes.has_changes():
+                change_summary = await _dm_engine.apply_state_changes(
+                    state_changes, session, _storage
+                )
             
             # 清理响应中的状态标签
             clean_response = _dm_engine.clean_state_tags(response)
@@ -650,9 +651,8 @@ class TRPGMessageHandler(BaseEventHandler):
             await _storage.save_session(session)
             
             # 发送响应（如果有状态变化，附加变化摘要）
-            if all_change_summaries:
-                combined_changes = "\n".join(all_change_summaries)
-                await self.send_text(stream_id, f"{clean_response}\n\n━━━ 状态变化 ━━━\n{combined_changes}")
+            if change_summary:
+                await self.send_text(stream_id, f"{clean_response}\n\n━━━ 状态变化 ━━━\n{change_summary}")
             else:
                 await self.send_text(stream_id, clean_response)
             
@@ -755,7 +755,7 @@ class TRPGMessageHandler(BaseEventHandler):
             return True
         
         # 引号对话
-        if (text.startswith('"') and text.endswith('"')) or (text.startswith('"') and text.endswith('"')):
+        if (text.startswith('"') and text.endswith('"')) or (text.startswith("“") and text.endswith("”")):
             return True
         
         return False

@@ -184,6 +184,10 @@ class TRPGCommand(BaseCommand):
         existing = await _storage.get_session(stream_id)
         if existing and existing.is_active():
             return False, "⚠️ 已有进行中的跑团！使用 /trpg end 结束", 2
+
+        if not _storage.is_group_allowed(stream_id):
+            await self.send_text("⚠️ 本群未被允许启用跑团（请在 `config.toml` 的 `[plugin].allowed_groups` 中配置）")
+            return False, "群组不允许", 0
         
         if not args:
             return await self._show_module_list()
@@ -249,10 +253,16 @@ class TRPGCommand(BaseCommand):
     async def _end(self, args: str) -> Tuple[bool, Optional[str], int]:
         """结束跑团会话"""
         stream_id = self.message.chat_stream.stream_id
+        user_id = str(self.message.message_info.user_info.user_id)
         session = await _storage.get_session(stream_id)
         
         if not session:
             return False, "⚠️ 当前没有进行中的跑团", 2
+
+        allow_player_end = _plugin_config.get("permissions", {}).get("allow_player_end_session", False)
+        if not allow_player_end and not _is_admin(user_id):
+            await self.send_text("⚠️ 只有管理员可以结束跑团")
+            return False, "权限不足", 0
         
         session.add_history("system", "跑团结束")
         await _storage.save_session(session)
@@ -349,6 +359,28 @@ class TRPGCommand(BaseCommand):
         if existing:
             await self.send_text(f"⚠️ 你已经以 {existing.character_name} 的身份加入了！")
             return False, "已加入", 0
+
+        # 中途加入控制（对已有人加入的会话生效）
+        session_config = _plugin_config.get("session", {})
+        allow_mid_join = session_config.get("allow_mid_join", True)
+        if not allow_mid_join and session.player_ids:
+            await self.send_text("⚠️ 本跑团不允许中途加入")
+            return False, "不允许中途加入", 0
+
+        # 中途加入确认（管理员）
+        mid_join_require_confirm = session_config.get("mid_join_require_confirm", False)
+        if mid_join_require_confirm and not _is_admin(user_id):
+            pending = _storage.get_pending_join(stream_id, user_id)
+            if pending:
+                await self.send_text("📝 你已有待确认的加入请求，请等待管理员处理")
+                return True, "待确认", 2
+
+            _storage.add_pending_join(stream_id, user_id, character_name)
+            await self.send_text(
+                "📝 已提交加入申请，等待管理员确认。\n"
+                "管理员可使用 `/trpg confirm` 查看并处理。"
+            )
+            return True, "待确认", 2
         
         player = await _storage.create_player(stream_id, user_id, character_name)
         session.add_history("system", f"{character_name} 加入了冒险", user_id=user_id)
@@ -390,9 +422,20 @@ class TRPGCommand(BaseCommand):
         elif action == "add" and len(parts) >= 2:
             # 加点: /trpg pc add 力量 3
             attr_name = parts[1]
-            points = int(parts[2]) if len(parts) >= 3 else 1
+            try:
+                points = int(parts[2]) if len(parts) >= 3 else 1
+            except ValueError:
+                await self.send_text("⚠️ 点数必须是整数")
+                return False, "无效数值", 0
+            if points <= 0:
+                await self.send_text("⚠️ 点数必须为正数")
+                return False, "无效数值", 0
+
+            player_cfg = _plugin_config.get("player", {})
+            min_attr = int(player_cfg.get("min_attribute", 3))
+            max_attr = int(player_cfg.get("max_attribute", 18))
             
-            success, msg = player.allocate_point(attr_name, points)
+            success, msg = player.allocate_point(attr_name, points, min_attribute=min_attr, max_attribute=max_attr)
             if success:
                 await _storage.save_player(player)
                 await self.send_text(f"✅ {msg}")
@@ -403,9 +446,20 @@ class TRPGCommand(BaseCommand):
         elif action == "sub" and len(parts) >= 2:
             # 减点: /trpg pc sub 力量 2
             attr_name = parts[1]
-            points = int(parts[2]) if len(parts) >= 3 else 1
+            try:
+                points = int(parts[2]) if len(parts) >= 3 else 1
+            except ValueError:
+                await self.send_text("⚠️ 点数必须是整数")
+                return False, "无效数值", 0
+            if points <= 0:
+                await self.send_text("⚠️ 点数必须为正数")
+                return False, "无效数值", 0
+
+            player_cfg = _plugin_config.get("player", {})
+            min_attr = int(player_cfg.get("min_attribute", 3))
+            max_attr = int(player_cfg.get("max_attribute", 18))
             
-            success, msg = player.allocate_point(attr_name, -points)
+            success, msg = player.allocate_point(attr_name, -points, min_attribute=min_attr, max_attribute=max_attr)
             if success:
                 await _storage.save_player(player)
                 await self.send_text(f"✅ {msg}")
@@ -623,6 +677,11 @@ class TRPGCommand(BaseCommand):
         """DM 控制命令"""
         if not _dm_engine:
             return False, "DM引擎未初始化", 0
+
+        user_id = str(self.message.message_info.user_info.user_id)
+        if not _is_admin(user_id):
+            await self.send_text("⚠️ 只有管理员可以使用 DM 命令")
+            return False, "权限不足", 0
         
         stream_id = self.message.chat_stream.stream_id
         session = await _storage.get_session(stream_id)
@@ -945,13 +1004,13 @@ class DiceShortcut(BaseCommand):
     """骰子快捷命令 /r"""
     command_name = "dice_shortcut"
     command_description = "掷骰子快捷命令"
-    command_pattern = r"^/r(?:oll)?\s+(?P<expr>.+)$"
+    command_pattern = r"^/r(?:oll)?(?:\s+(?P<expr>.+))?$"
 
     async def execute(self) -> Tuple[bool, Optional[str], int]:
         if not _dice_service:
             return False, "骰子服务未初始化", 0
         
-        expr = self.matched_groups.get("expr", "d20") or "d20"
+        expr = self.matched_groups.get("expr") or "d20"
         try:
             result = _dice_service.roll(expr)
             await self.send_text(result.get_display())

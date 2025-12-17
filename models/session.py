@@ -288,3 +288,26 @@ class TRPGSession:
     def is_active(self) -> bool:
         """检查会话是否活跃"""
         return self.status == "active"
+
+    def trim_history(self, max_length: int) -> int:
+        """
+        修剪历史记录，避免存档无限增长。
+
+        Returns:
+            实际删除的条目数
+        """
+        if max_length <= 0:
+            return 0
+        if len(self.history) <= max_length:
+            return 0
+
+        removed = len(self.history) - max_length
+        self.history = self.history[-max_length:]
+
+        # 同步修正索引类字段，避免修剪后逻辑异常
+        ctx = self.story_context
+        ctx.last_image_history_index = max(0, ctx.last_image_history_index - removed)
+        ctx.last_summary_history_index = max(0, ctx.last_summary_history_index - removed)
+
+        self.updated_at = time.time()
+        return removed

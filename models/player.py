@@ -282,7 +282,14 @@ class Player:
 
     # ==================== 加点系统 ====================
 
-    def allocate_point(self, attr_name: str, points: int = 1) -> Tuple[bool, str]:
+    def allocate_point(
+        self,
+        attr_name: str,
+        points: int = 1,
+        *,
+        min_attribute: int = DEFAULT_MIN_ATTRIBUTE,
+        max_attribute: int = DEFAULT_MAX_ATTRIBUTE,
+    ) -> Tuple[bool, str]:
         """
         分配属性点
         
@@ -314,10 +321,10 @@ class Player:
         new_value = current_value + points
         
         # 检查属性范围
-        if new_value > DEFAULT_MAX_ATTRIBUTE:
-            return False, f"属性不能超过 {DEFAULT_MAX_ATTRIBUTE}！当前 {current_value}"
-        if new_value < DEFAULT_MIN_ATTRIBUTE:
-            return False, f"属性不能低于 {DEFAULT_MIN_ATTRIBUTE}！当前 {current_value}"
+        if new_value > max_attribute:
+            return False, f"属性不能超过 {max_attribute}！当前 {current_value}"
+        if new_value < min_attribute:
+            return False, f"属性不能低于 {min_attribute}！当前 {current_value}"
         
         # 减点时检查是否有足够的已分配点数
         if points < 0:

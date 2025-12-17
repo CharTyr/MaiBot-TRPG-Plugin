@@ -68,6 +68,7 @@ class PDFModuleParser:
                 import fitz  # PyMuPDF
                 
                 doc = fitz.open(str(path))
+                page_count = len(doc)
                 text_parts = []
                 
                 for page_num, page in enumerate(doc):
@@ -78,7 +79,7 @@ class PDFModuleParser:
                 doc.close()
                 
                 full_text = "\n\n".join(text_parts)
-                logger.info(f"[PDFParser] 成功提取 {len(doc)} 页，共 {len(full_text)} 字符")
+                logger.info(f"[PDFParser] 成功提取 {page_count} 页，共 {len(full_text)} 字符")
                 return full_text
                 
             except ImportError:

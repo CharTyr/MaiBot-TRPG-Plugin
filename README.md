@@ -194,8 +194,9 @@ retry_delay = 1.0            # 重试间隔（秒，指数退避）
 
 [multiplayer]
 batch_actions = true         # 启用多人行动批量处理
-action_collect_window = 5.0  # 行动收集窗口（秒）
-extra_wait_time = 2.0        # 额外等待时间
+action_collect_window = 60.0 # 等待所有玩家行动的最大时间（秒）
+reminder_interval = 20.0     # 提醒未行动玩家的间隔（秒）
+process_when_all_ready = true # 所有玩家行动后立即处理
 
 [llm_models]
 dm_response_model = "replyer"    # DM 响应
@@ -210,7 +211,7 @@ intent_model = "planner"         # 意图理解
 enabled = false              # 是否启用
 api_type = "sd_api"          # API 类型: openai, sd_api, gradio, novelai
 base_url = ""                # API 地址
-api_key = ""                 # API 密钥
+api_key = ""                 # API 密钥（建议留空，用环境变量 MAIBOT_TRPG_DM_IMAGE_API_KEY 注入）
 model_name = ""              # 模型名称（OpenAI 格式需要）
 default_size_preset = "landscape"  # 默认尺寸
 auto_generate = false        # 自动生成

@@ -3,6 +3,7 @@
 """
 
 import json
+import re
 from pathlib import Path
 from typing import Optional, List, Dict, Any, TYPE_CHECKING
 
@@ -20,14 +21,45 @@ logger = get_logger("trpg_module_loader")
 class ModuleLoader:
     """模组加载器 - 负责加载和应用模组"""
 
-    def __init__(self, modules_dir: Optional[Path] = None):
-        self.modules_dir = modules_dir or Path(__file__).parent / "custom"
+    def __init__(self, modules_dir: Optional[Path] = None, config: Optional[Dict[str, Any]] = None):
+        plugin_root = Path(__file__).parent.parent
+        module_config = (config or {}).get("module", {})
+
+        # JSON 模组目录（导入后落盘）
+        configured_modules_dir = module_config.get("custom_module_dir", "data/modules")
+        self.modules_dir = modules_dir or (plugin_root / configured_modules_dir)
         self.modules_dir.mkdir(parents=True, exist_ok=True)
+
         # Markdown 自定义模组目录
-        self.custom_modules_dir = Path(__file__).parent.parent / "custom_modules"
+        configured_markdown_dir = module_config.get("markdown_module_dir", "custom_modules")
+        self.custom_modules_dir = plugin_root / configured_markdown_dir
         self.custom_modules_dir.mkdir(parents=True, exist_ok=True)
+
         # 扫描并导入 Markdown 模组
-        self._scan_markdown_modules()
+        self.auto_scan_markdown = module_config.get("auto_scan_markdown", True)
+        if self.auto_scan_markdown:
+            self._scan_markdown_modules()
+
+    def _get_markdown_module_id(self, md_file: Path) -> str:
+        """从 Markdown front matter 解析 module id（若不存在则回退文件名）"""
+        try:
+            content = md_file.read_text(encoding="utf-8")
+        except Exception:
+            return md_file.stem
+
+        fm = re.match(r"^---\s*\n(.*?)\n---\s*\n", content, re.DOTALL)
+        if not fm:
+            return md_file.stem
+
+        for line in fm.group(1).splitlines():
+            if ":" not in line:
+                continue
+            k, v = line.split(":", 1)
+            if k.strip() == "id":
+                parsed = v.strip().strip("\"'")
+                return parsed or md_file.stem
+
+        return md_file.stem
 
     def _scan_markdown_modules(self):
         """扫描并导入 Markdown 模组"""
@@ -38,7 +70,8 @@ class ModuleLoader:
             if md_file.name.startswith("_") or md_file.name == "README.md":
                 continue
             # 检查是否已导入（对应 JSON 存在）
-            json_file = self.modules_dir / f"{md_file.stem}.json"
+            module_id = self._get_markdown_module_id(md_file)
+            json_file = self.modules_dir / f"{module_id}.json"
             if json_file.exists():
                 # 检查 Markdown 是否更新
                 if md_file.stat().st_mtime <= json_file.stat().st_mtime:
@@ -53,7 +86,8 @@ class ModuleLoader:
 
     def refresh_modules(self):
         """刷新模组列表，重新扫描 Markdown 模组"""
-        self._scan_markdown_modules()
+        if self.auto_scan_markdown:
+            self._scan_markdown_modules()
 
     def list_available_modules(self) -> List[Dict[str, Any]]:
         """列出所有可用的模组"""

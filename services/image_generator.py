@@ -6,6 +6,7 @@
 
 import json
 import base64
+import os
 import urllib.request
 import random
 from typing import Optional, Dict, Any, Tuple, TYPE_CHECKING
@@ -38,7 +39,8 @@ class ImageGenerator:
         self.enabled = self.image_config.get("enabled", False)
         self.api_type = self.image_config.get("api_type", "openai")
         self.base_url = self.image_config.get("base_url", "")
-        self.api_key = self.image_config.get("api_key", "")
+        # 建议不要把密钥写入仓库：优先读配置，其次读环境变量
+        self.api_key = self.image_config.get("api_key", "") or os.getenv("MAIBOT_TRPG_DM_IMAGE_API_KEY", "")
         self.model_name = self.image_config.get("model_name", "")
         
         # 尺寸配置
@@ -144,6 +146,8 @@ class ImageGenerator:
         try:
             # 使用 planner 模型
             models = llm_api.get_available_models()
+            if not models:
+                return False, "没有可用的 LLM 模型", "landscape"
             model_name = self.llm_models_config.get("image_prompt_model", "planner")
             model_config = models.get(model_name) or models.get("planner") or list(models.values())[0]
             
@@ -203,6 +207,8 @@ class ImageGenerator:
 
         try:
             models = llm_api.get_available_models()
+            if not models:
+                return False, "没有可用的 LLM 模型"
             model_name = self.llm_models_config.get("image_prompt_model", "planner")
             model_config = models.get(model_name) or models.get("planner") or list(models.values())[0]
             

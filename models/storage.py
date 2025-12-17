@@ -6,8 +6,11 @@ import json
 import asyncio
 from pathlib import Path
 from typing import Dict, Optional, List, Any, Tuple
+from src.common.logger import get_logger
 from .session import TRPGSession
 from .player import Player
+
+logger = get_logger("trpg_storage")
 
 
 class StorageManager:
@@ -86,7 +89,7 @@ class StorageManager:
                 if session.status != "ended":
                     self._sessions[session.stream_id] = session
             except Exception as e:
-                print(f"加载会话文件失败 {session_file}: {e}")
+                logger.warning(f"[Storage] 加载会话文件失败 {session_file}: {e}")
 
     async def _load_all_players(self):
         """加载所有玩家数据"""
@@ -105,7 +108,7 @@ class StorageManager:
                         player = Player.from_dict(data)
                         self._players[stream_id][player.user_id] = player
                     except Exception as e:
-                        print(f"加载玩家文件失败 {player_file}: {e}")
+                        logger.warning(f"[Storage] 加载玩家文件失败 {player_file}: {e}")
 
     # ==================== 群组权限检查 ====================
 
@@ -158,6 +161,9 @@ class StorageManager:
     async def save_session(self, session: TRPGSession):
         """保存会话"""
         async with self._lock:
+            max_history = self._config.get("session", {}).get("max_history_length", 0)
+            if isinstance(max_history, int) and max_history > 0:
+                session.trim_history(max_history)
             session_file = self.sessions_dir / f"{session.stream_id}.json"
             with open(session_file, "w", encoding="utf-8") as f:
                 json.dump(session.to_dict(), f, ensure_ascii=False, indent=2)
@@ -369,6 +375,8 @@ class StorageManager:
         player_config = self._config.get("player", {})
         default_free_points = player_config.get("free_points", 30)
         base_attr = player_config.get("base_attribute", 8)
+        default_max_hp = player_config.get("default_max_hp", 20)
+        default_max_mp = player_config.get("default_max_mp", 10)
         
         # 创建基础属性（所有属性从基础值开始）
         from .player import PlayerAttributes
@@ -386,6 +394,10 @@ class StorageManager:
             stream_id=stream_id, 
             character_name=character_name,
             attributes=base_attributes,
+            hp_current=default_max_hp,
+            hp_max=default_max_hp,
+            mp_current=default_max_mp,
+            mp_max=default_max_mp,
             free_points=free_points if free_points is not None else default_free_points,
             points_allocated={},
             character_locked=False,

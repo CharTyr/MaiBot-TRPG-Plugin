@@ -75,7 +75,9 @@ class DiceService:
         - 2d10-2: 掷两个10面骰减2
         - 2d6+1d4+3: 复杂表达式
         """
-        expression = expression.strip().lower().replace(" ", "")
+        expression = (expression or "").strip().lower().replace(" ", "")
+        if not expression:
+            expression = "d20"
         
         # 尝试简单表达式
         simple_match = self.DICE_PATTERN.match(expression)
@@ -93,9 +95,17 @@ class DiceService:
         sides = int(sides_str)
         modifier = int(modifier_str) if modifier_str else 0
         
+        # 基础校验
+        if count < 1:
+            raise ValueError("骰子数量必须 >= 1")
+        if sides < 1:
+            raise ValueError("骰子面数必须 >= 1")
+
         # 验证限制
-        count = min(count, self.max_dice_count)
-        sides = min(sides, self.max_dice_sides)
+        if count > self.max_dice_count:
+            raise ValueError(f"单次最大骰子数量为 {self.max_dice_count}")
+        if sides > self.max_dice_sides:
+            raise ValueError(f"单个骰子最大面数为 {self.max_dice_sides}")
         
         # 掷骰子
         rolls = [random.randint(1, sides) for _ in range(count)]
@@ -126,37 +136,40 @@ class DiceService:
         if expression and expression[0] not in '+-':
             expression = '+' + expression
         
-        # 分割表达式
-        parts = re.findall(r'[+-][^+-]+', expression)
-        
-        for part in parts:
-            part = part.strip()
-            if not part:
-                continue
-            
-            sign = 1 if part[0] == '+' else -1
-            part = part[1:]  # 移除符号
-            
-            dice_match = re.match(r'^(\d*)d(\d+)$', part, re.IGNORECASE)
-            if dice_match:
-                count_str, sides_str = dice_match.groups()
+        token_re = re.compile(r'([+-])(\d*d\d+|\d+)', re.IGNORECASE)
+        pos = 0
+        for m in token_re.finditer(expression):
+            if m.start() != pos:
+                raise ValueError(f"骰子表达式无效: {expression}")
+            pos = m.end()
+
+            sign = 1 if m.group(1) == "+" else -1
+            term = m.group(2)
+
+            if "d" in term:
+                count_str, sides_str = term.split("d", 1)
                 count = int(count_str) if count_str else 1
                 sides = int(sides_str)
-                
-                count = min(count, self.max_dice_count)
-                sides = min(sides, self.max_dice_sides)
-                
+
+                if count < 1:
+                    raise ValueError("骰子数量必须 >= 1")
+                if sides < 1:
+                    raise ValueError("骰子面数必须 >= 1")
+                if count > self.max_dice_count:
+                    raise ValueError(f"单次最大骰子数量为 {self.max_dice_count}")
+                if sides > self.max_dice_sides:
+                    raise ValueError(f"单个骰子最大面数为 {self.max_dice_sides}")
+
                 rolls = [random.randint(1, sides) for _ in range(count)]
                 all_rolls.extend([r * sign for r in rolls])
                 total += sum(rolls) * sign
             else:
-                # 纯数字修正值
-                try:
-                    num = int(part)
-                    modifier += num * sign
-                    total += num * sign
-                except ValueError:
-                    pass
+                num = int(term)
+                modifier += num * sign
+                total += num * sign
+
+        if pos != len(expression):
+            raise ValueError(f"骰子表达式无效: {expression}")
         
         return DiceResult(
             expression=expression.lstrip('+'),
