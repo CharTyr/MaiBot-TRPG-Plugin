@@ -3,7 +3,9 @@ DM 引擎 - 负责剧情生成、NPC 扮演、环境描述等核心 DM 功能
 深度融合 MaiBot 的 replyer 系统
 """
 
-from typing import Optional, List, Dict, Any, TYPE_CHECKING
+import re
+import json
+from typing import Optional, List, Dict, Any, Tuple, TYPE_CHECKING
 from src.plugin_system.apis import llm_api
 from src.common.logger import get_logger
 
@@ -12,6 +14,56 @@ if TYPE_CHECKING:
     from ..models.player import Player
 
 logger = get_logger("trpg_dm_engine")
+
+
+class GameStateChange:
+    """游戏状态变化记录"""
+    
+    def __init__(self):
+        self.hp_changes: Dict[str, int] = {}  # user_id -> delta
+        self.mp_changes: Dict[str, int] = {}  # user_id -> delta
+        self.attr_changes: Dict[str, Dict[str, int]] = {}  # user_id -> {attr: delta}
+        self.item_gains: Dict[str, List[Tuple[str, int]]] = {}  # user_id -> [(item, qty)]
+        self.item_losses: Dict[str, List[Tuple[str, int]]] = {}  # user_id -> [(item, qty)]
+        self.world_changes: Dict[str, Any] = {}  # location, time, weather, etc.
+        self.npc_changes: Dict[str, Dict[str, Any]] = {}  # npc_name -> changes
+    
+    def has_changes(self) -> bool:
+        return bool(
+            self.hp_changes or self.mp_changes or self.attr_changes or
+            self.item_gains or self.item_losses or self.world_changes or
+            self.npc_changes
+        )
+    
+    def get_summary(self) -> str:
+        """获取变化摘要"""
+        lines = []
+        
+        for user_id, delta in self.hp_changes.items():
+            sign = "+" if delta > 0 else ""
+            lines.append(f"❤️ HP {sign}{delta}")
+        
+        for user_id, delta in self.mp_changes.items():
+            sign = "+" if delta > 0 else ""
+            lines.append(f"💙 MP {sign}{delta}")
+        
+        for user_id, attrs in self.attr_changes.items():
+            for attr, delta in attrs.items():
+                sign = "+" if delta > 0 else ""
+                lines.append(f"📊 {attr} {sign}{delta}")
+        
+        for user_id, items in self.item_gains.items():
+            for item, qty in items:
+                lines.append(f"🎒 获得 {item} x{qty}")
+        
+        for user_id, items in self.item_losses.items():
+            for item, qty in items:
+                lines.append(f"🎒 失去 {item} x{qty}")
+        
+        if self.world_changes.get("location"):
+            lines.append(f"📍 移动到: {self.world_changes['location']}")
+        
+        return "\n".join(lines) if lines else ""
 
 
 class DMEngine:
@@ -38,6 +90,24 @@ class DMEngine:
         self.auto_image_interval = self.image_config.get("auto_generate_interval", 10)
         self.climax_image_enabled = self.image_config.get("climax_auto_image", True)
         
+        # 状态变化解析模式
+        self.state_change_patterns = {
+            # HP 变化: [HP -5] [HP +10] [生命值 -3]
+            "hp": re.compile(r'\[(?:HP|生命值?|hp)\s*([+-]?\d+)\]', re.IGNORECASE),
+            # MP 变化: [MP -5] [MP +10] [魔力值 -3]
+            "mp": re.compile(r'\[(?:MP|魔力值?|mp)\s*([+-]?\d+)\]', re.IGNORECASE),
+            # 获得物品: [获得 钥匙] [获得 金币 x10]
+            "item_gain": re.compile(r'\[获得\s+([^\]]+?)(?:\s*[xX×]\s*(\d+))?\]'),
+            # 失去物品: [失去 钥匙] [消耗 药水 x2]
+            "item_loss": re.compile(r'\[(?:失去|消耗|使用)\s+([^\]]+?)(?:\s*[xX×]\s*(\d+))?\]'),
+            # 属性变化: [力量 +2] [敏捷 -1]
+            "attr": re.compile(r'\[(?:力量|敏捷|体质|智力|感知|魅力|STR|DEX|CON|INT|WIS|CHA)\s*([+-]?\d+)\]', re.IGNORECASE),
+            # 位置变化: [移动到 图书馆] [进入 地下室]
+            "location": re.compile(r'\[(?:移动到|进入|来到|到达)\s+([^\]]+)\]'),
+            # 时间变化: [时间 夜晚] [时间流逝 2小时]
+            "time": re.compile(r'\[时间\s+([^\]]+)\]'),
+        }
+        
         # 高潮关键词（用于检测剧情高潮）
         self.climax_keywords = [
             # 战斗高潮
@@ -51,6 +121,209 @@ class DMEngine:
             # 危机
             "危险", "紧急", "爆炸", "崩塌", "逃跑",
         ]
+
+    def parse_state_changes(
+        self, 
+        dm_response: str, 
+        player: Optional["Player"] = None
+    ) -> GameStateChange:
+        """
+        从 DM 响应中解析状态变化
+        
+        支持的格式:
+        - [HP -5] [HP +10] - HP 变化
+        - [MP -3] [MP +5] - MP 变化
+        - [获得 钥匙] [获得 金币 x10] - 获得物品
+        - [失去 钥匙] [消耗 药水 x2] - 失去物品
+        - [力量 +2] [敏捷 -1] - 属性变化
+        - [移动到 图书馆] - 位置变化
+        """
+        changes = GameStateChange()
+        user_id = player.user_id if player else "unknown"
+        
+        # 解析 HP 变化
+        hp_matches = self.state_change_patterns["hp"].findall(dm_response)
+        for match in hp_matches:
+            delta = int(match)
+            changes.hp_changes[user_id] = changes.hp_changes.get(user_id, 0) + delta
+        
+        # 解析 MP 变化
+        mp_matches = self.state_change_patterns["mp"].findall(dm_response)
+        for match in mp_matches:
+            delta = int(match)
+            changes.mp_changes[user_id] = changes.mp_changes.get(user_id, 0) + delta
+        
+        # 解析获得物品
+        item_gain_matches = self.state_change_patterns["item_gain"].findall(dm_response)
+        for match in item_gain_matches:
+            item_name = match[0].strip()
+            qty = int(match[1]) if match[1] else 1
+            if user_id not in changes.item_gains:
+                changes.item_gains[user_id] = []
+            changes.item_gains[user_id].append((item_name, qty))
+        
+        # 解析失去物品
+        item_loss_matches = self.state_change_patterns["item_loss"].findall(dm_response)
+        for match in item_loss_matches:
+            item_name = match[0].strip()
+            qty = int(match[1]) if match[1] else 1
+            if user_id not in changes.item_losses:
+                changes.item_losses[user_id] = []
+            changes.item_losses[user_id].append((item_name, qty))
+        
+        # 解析属性变化
+        attr_pattern = re.compile(
+            r'\[(力量|敏捷|体质|智力|感知|魅力|STR|DEX|CON|INT|WIS|CHA)\s*([+-]?\d+)\]', 
+            re.IGNORECASE
+        )
+        attr_matches = attr_pattern.findall(dm_response)
+        for attr_name, delta_str in attr_matches:
+            delta = int(delta_str)
+            if user_id not in changes.attr_changes:
+                changes.attr_changes[user_id] = {}
+            # 标准化属性名
+            attr_map = {
+                "力量": "strength", "str": "strength",
+                "敏捷": "dexterity", "dex": "dexterity",
+                "体质": "constitution", "con": "constitution",
+                "智力": "intelligence", "int": "intelligence",
+                "感知": "wisdom", "wis": "wisdom",
+                "魅力": "charisma", "cha": "charisma",
+            }
+            std_attr = attr_map.get(attr_name.lower(), attr_name.lower())
+            changes.attr_changes[user_id][std_attr] = delta
+        
+        # 解析位置变化
+        location_matches = self.state_change_patterns["location"].findall(dm_response)
+        if location_matches:
+            changes.world_changes["location"] = location_matches[-1].strip()
+        
+        # 解析时间变化
+        time_matches = self.state_change_patterns["time"].findall(dm_response)
+        if time_matches:
+            changes.world_changes["time"] = time_matches[-1].strip()
+        
+        return changes
+
+    async def apply_state_changes(
+        self,
+        changes: GameStateChange,
+        session: "TRPGSession",
+        storage: Any,  # StorageManager
+    ) -> str:
+        """
+        应用状态变化到玩家和会话
+        
+        Returns:
+            变化摘要文本
+        """
+        applied_changes = []
+        
+        # 应用 HP 变化
+        for user_id, delta in changes.hp_changes.items():
+            player = await storage.get_player(session.stream_id, user_id)
+            if player:
+                old_hp, new_hp = player.modify_hp(delta)
+                await storage.save_player(player)
+                sign = "+" if delta > 0 else ""
+                applied_changes.append(
+                    f"❤️ {player.character_name} HP: {old_hp} → {new_hp} ({sign}{delta})"
+                )
+                logger.info(f"[DMEngine] 应用 HP 变化: {player.character_name} {sign}{delta}")
+        
+        # 应用 MP 变化
+        for user_id, delta in changes.mp_changes.items():
+            player = await storage.get_player(session.stream_id, user_id)
+            if player:
+                old_mp, new_mp = player.modify_mp(delta)
+                await storage.save_player(player)
+                sign = "+" if delta > 0 else ""
+                applied_changes.append(
+                    f"💙 {player.character_name} MP: {old_mp} → {new_mp} ({sign}{delta})"
+                )
+                logger.info(f"[DMEngine] 应用 MP 变化: {player.character_name} {sign}{delta}")
+        
+        # 应用属性变化
+        for user_id, attrs in changes.attr_changes.items():
+            player = await storage.get_player(session.stream_id, user_id)
+            if player:
+                for attr_name, delta in attrs.items():
+                    old_val = player.attributes.get_attribute(attr_name)
+                    new_val = old_val + delta
+                    player.attributes.set_attribute(attr_name, new_val)
+                    sign = "+" if delta > 0 else ""
+                    applied_changes.append(
+                        f"📊 {player.character_name} {attr_name}: {old_val} → {new_val} ({sign}{delta})"
+                    )
+                    logger.info(f"[DMEngine] 应用属性变化: {player.character_name} {attr_name} {sign}{delta}")
+                await storage.save_player(player)
+        
+        # 应用物品获得
+        for user_id, items in changes.item_gains.items():
+            player = await storage.get_player(session.stream_id, user_id)
+            if player:
+                for item_name, qty in items:
+                    player.add_item(item_name, qty)
+                    applied_changes.append(
+                        f"🎒 {player.character_name} 获得: {item_name} x{qty}"
+                    )
+                    logger.info(f"[DMEngine] 物品获得: {player.character_name} +{item_name} x{qty}")
+                await storage.save_player(player)
+        
+        # 应用物品失去
+        for user_id, items in changes.item_losses.items():
+            player = await storage.get_player(session.stream_id, user_id)
+            if player:
+                for item_name, qty in items:
+                    removed = player.remove_item(item_name, qty)
+                    if removed:
+                        applied_changes.append(
+                            f"🎒 {player.character_name} 失去: {item_name} x{qty}"
+                        )
+                        logger.info(f"[DMEngine] 物品失去: {player.character_name} -{item_name} x{qty}")
+                await storage.save_player(player)
+        
+        # 应用世界状态变化
+        if changes.world_changes.get("location"):
+            old_location = session.world_state.location
+            session.world_state.location = changes.world_changes["location"]
+            applied_changes.append(
+                f"📍 位置变化: {old_location} → {session.world_state.location}"
+            )
+            logger.info(f"[DMEngine] 位置变化: {session.world_state.location}")
+        
+        if changes.world_changes.get("time"):
+            session.world_state.time_of_day = changes.world_changes["time"]
+            applied_changes.append(f"🕐 时间变化: {session.world_state.time_of_day}")
+        
+        # 保存会话
+        if changes.world_changes:
+            await storage.save_session(session)
+        
+        return "\n".join(applied_changes) if applied_changes else ""
+
+    def clean_state_tags(self, response: str) -> str:
+        """从响应中移除状态变化标签，保留纯叙述文本"""
+        # 移除所有 [...] 格式的状态标签
+        patterns = [
+            r'\[(?:HP|生命值?|hp)\s*[+-]?\d+\]',
+            r'\[(?:MP|魔力值?|mp)\s*[+-]?\d+\]',
+            r'\[获得\s+[^\]]+\]',
+            r'\[(?:失去|消耗|使用)\s+[^\]]+\]',
+            r'\[(?:力量|敏捷|体质|智力|感知|魅力|STR|DEX|CON|INT|WIS|CHA)\s*[+-]?\d+\]',
+            r'\[(?:移动到|进入|来到|到达)\s+[^\]]+\]',
+            r'\[时间\s+[^\]]+\]',
+        ]
+        
+        cleaned = response
+        for pattern in patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+        
+        # 清理多余的空格和换行
+        cleaned = re.sub(r'\n\s*\n', '\n\n', cleaned)
+        cleaned = re.sub(r'  +', ' ', cleaned)
+        
+        return cleaned.strip()
 
     def detect_climax(self, dm_response: str, session: "TRPGSession") -> bool:
         """
@@ -471,7 +744,19 @@ HP: {player.hp_current}/{player.hp_max} | MP: {player.mp_current}/{player.mp_max
 2. 如果行动有不确定性，必须要求骰子检定，格式：「🎲 请进行XX检定 `/r d20`，DC XX」
 3. 如果玩家刚刚进行了检定（历史记录中有骰子结果），根据结果描述成功或失败
 4. 保持沉浸感，使用第三人称
-5. 不要过度描述，保持简洁（50-100字）"""
+5. 不要过度描述，保持简洁（50-100字）
+
+【状态变化标记】
+当玩家的状态发生变化时，必须在叙述中使用以下标签（系统会自动解析并应用）：
+- HP变化: [HP -5] 或 [HP +10]
+- MP变化: [MP -3] 或 [MP +5]
+- 获得物品: [获得 物品名] 或 [获得 物品名 x数量]
+- 失去物品: [失去 物品名] 或 [消耗 物品名 x数量]
+- 属性变化: [力量 +2] 或 [敏捷 -1]
+- 位置变化: [移动到 新位置名]
+
+示例: "你被陷阱击中 [HP -5]，但成功找到了一把钥匙 [获得 铜钥匙]。"
+注意: 只有在确实发生变化时才添加标签，不要随意添加。"""
 
         return prompt
 

@@ -345,13 +345,51 @@ class StorageManager:
             return self._players[stream_id].get(user_id)
         return None
 
-    async def create_player(self, stream_id: str, user_id: str, character_name: str = "无名冒险者") -> Player:
-        """创建新玩家"""
+    async def create_player(
+        self, 
+        stream_id: str, 
+        user_id: str, 
+        character_name: str = "无名冒险者",
+        free_points: int = None,
+    ) -> Player:
+        """
+        创建新玩家
+        
+        Args:
+            stream_id: 会话ID
+            user_id: 用户ID
+            character_name: 角色名
+            free_points: 自由加点点数（None则使用配置默认值）
+        """
         if stream_id not in self._players:
             self._players[stream_id] = {}
             (self.players_dir / stream_id).mkdir(parents=True, exist_ok=True)
         
-        player = Player(user_id=user_id, stream_id=stream_id, character_name=character_name)
+        # 获取配置的加点点数
+        player_config = self._config.get("player", {})
+        default_free_points = player_config.get("free_points", 30)
+        base_attr = player_config.get("base_attribute", 8)
+        
+        # 创建基础属性（所有属性从基础值开始）
+        from .player import PlayerAttributes
+        base_attributes = PlayerAttributes(
+            strength=base_attr,
+            dexterity=base_attr,
+            constitution=base_attr,
+            intelligence=base_attr,
+            wisdom=base_attr,
+            charisma=base_attr,
+        )
+        
+        player = Player(
+            user_id=user_id, 
+            stream_id=stream_id, 
+            character_name=character_name,
+            attributes=base_attributes,
+            free_points=free_points if free_points is not None else default_free_points,
+            points_allocated={},
+            character_locked=False,
+        )
         self._players[stream_id][user_id] = player
         await self.save_player(player)
         

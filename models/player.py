@@ -3,7 +3,7 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 import time
 
 
@@ -98,6 +98,13 @@ class PlayerAttributes:
         )
 
 
+# 默认配置
+DEFAULT_FREE_POINTS = 30  # 初始自由加点点数
+DEFAULT_BASE_ATTRIBUTE = 8  # 基础属性值（加点前）
+DEFAULT_MAX_ATTRIBUTE = 18  # 单项属性最大值
+DEFAULT_MIN_ATTRIBUTE = 3   # 单项属性最小值
+
+
 @dataclass
 class Player:
     """玩家角色"""
@@ -117,6 +124,11 @@ class Player:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     custom_data: Dict[str, Any] = field(default_factory=dict)
+    
+    # 加点系统
+    free_points: int = DEFAULT_FREE_POINTS  # 剩余自由加点点数
+    points_allocated: Dict[str, int] = field(default_factory=dict)  # 已分配的点数 {attr: points}
+    character_locked: bool = False  # 角色是否已锁定（锁定后不能再加点）
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -136,6 +148,9 @@ class Player:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "custom_data": self.custom_data,
+            "free_points": self.free_points,
+            "points_allocated": self.points_allocated,
+            "character_locked": self.character_locked,
         }
 
     @classmethod
@@ -160,6 +175,9 @@ class Player:
             created_at=data.get("created_at", time.time()),
             updated_at=data.get("updated_at", time.time()),
             custom_data=data.get("custom_data", {}),
+            free_points=data.get("free_points", DEFAULT_FREE_POINTS),
+            points_allocated=data.get("points_allocated", {}),
+            character_locked=data.get("character_locked", False),
         )
 
     def modify_hp(self, amount: int) -> tuple[int, int]:
@@ -217,9 +235,12 @@ class Player:
         hp_bar = self._get_bar(self.hp_current, self.hp_max, "❤️")
         mp_bar = self._get_bar(self.mp_current, self.mp_max, "💙")
         
+        # 状态标记
+        lock_status = "🔒" if self.character_locked else "📝"
+        
         sheet = f"""
 ╔══════════════════════════════╗
-║  📜 {self.character_name} 的角色卡
+║  📜 {self.character_name} 的角色卡 {lock_status}
 ╠══════════════════════════════╣
 ║  等级: Lv.{self.level}  经验: {self.experience}
 ║  
@@ -258,3 +279,111 @@ class Player:
     def is_alive(self) -> bool:
         """检查角色是否存活"""
         return self.hp_current > 0
+
+    # ==================== 加点系统 ====================
+
+    def allocate_point(self, attr_name: str, points: int = 1) -> Tuple[bool, str]:
+        """
+        分配属性点
+        
+        Args:
+            attr_name: 属性名（支持简写）
+            points: 要分配的点数（正数加点，负数减点）
+            
+        Returns:
+            (成功, 消息)
+        """
+        if self.character_locked:
+            return False, "角色已锁定，无法修改属性"
+        
+        # 标准化属性名
+        attr_name_lower = attr_name.lower()
+        if attr_name_lower in PlayerAttributes.ATTR_ALIASES:
+            std_attr = PlayerAttributes.ATTR_ALIASES[attr_name_lower]
+        elif hasattr(self.attributes, attr_name_lower):
+            std_attr = attr_name_lower
+        else:
+            return False, f"未知属性: {attr_name}"
+        
+        # 检查点数是否足够
+        if points > 0 and points > self.free_points:
+            return False, f"点数不足！剩余 {self.free_points} 点，需要 {points} 点"
+        
+        # 计算新属性值
+        current_value = self.attributes.get_attribute(std_attr)
+        new_value = current_value + points
+        
+        # 检查属性范围
+        if new_value > DEFAULT_MAX_ATTRIBUTE:
+            return False, f"属性不能超过 {DEFAULT_MAX_ATTRIBUTE}！当前 {current_value}"
+        if new_value < DEFAULT_MIN_ATTRIBUTE:
+            return False, f"属性不能低于 {DEFAULT_MIN_ATTRIBUTE}！当前 {current_value}"
+        
+        # 减点时检查是否有足够的已分配点数
+        if points < 0:
+            allocated = self.points_allocated.get(std_attr, 0)
+            if allocated + points < 0:
+                return False, f"无法减点！该属性只分配了 {allocated} 点"
+        
+        # 应用变化
+        self.attributes.set_attribute(std_attr, new_value)
+        self.free_points -= points
+        
+        # 记录分配
+        if std_attr not in self.points_allocated:
+            self.points_allocated[std_attr] = 0
+        self.points_allocated[std_attr] += points
+        
+        self.updated_at = time.time()
+        
+        change = f"+{points}" if points > 0 else str(points)
+        return True, f"{attr_name} {current_value} → {new_value} ({change})，剩余 {self.free_points} 点"
+
+    def lock_character(self) -> Tuple[bool, str]:
+        """锁定角色，不再允许加点"""
+        if self.character_locked:
+            return False, "角色已经锁定"
+        
+        self.character_locked = True
+        self.updated_at = time.time()
+        return True, "角色已锁定，属性分配完成"
+
+    def unlock_character(self) -> Tuple[bool, str]:
+        """解锁角色（管理员功能）"""
+        if not self.character_locked:
+            return False, "角色未锁定"
+        
+        self.character_locked = False
+        self.updated_at = time.time()
+        return True, "角色已解锁"
+
+    def reset_points(self) -> Tuple[bool, str]:
+        """重置所有加点"""
+        if self.character_locked:
+            return False, "角色已锁定，无法重置"
+        
+        # 恢复所有属性到基础值
+        total_refund = 0
+        for attr, points in self.points_allocated.items():
+            current = self.attributes.get_attribute(attr)
+            self.attributes.set_attribute(attr, current - points)
+            total_refund += points
+        
+        self.free_points += total_refund
+        self.points_allocated = {}
+        self.updated_at = time.time()
+        
+        return True, f"已重置所有加点，返还 {total_refund} 点，当前剩余 {self.free_points} 点"
+
+    def get_points_display(self) -> str:
+        """获取加点状态显示"""
+        status = "🔒 已锁定" if self.character_locked else f"🎯 剩余 {self.free_points} 点"
+        
+        if self.points_allocated:
+            allocated_str = ", ".join([
+                f"{attr[:3].upper()}+{pts}" for attr, pts in self.points_allocated.items() if pts > 0
+            ])
+            if allocated_str:
+                status += f"\n📊 已分配: {allocated_str}"
+        
+        return status

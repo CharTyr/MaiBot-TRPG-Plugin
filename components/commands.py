@@ -337,9 +337,13 @@ class TRPGCommand(BaseCommand):
         character_name = args.strip() or "无名冒险者"
         
         session = await _storage.get_session(stream_id)
-        if not session or not session.is_active():
-            await self.send_text("⚠️ 当前没有进行中的跑团")
+        if not session:
+            await self.send_text("⚠️ 当前没有跑团会话，无法加入")
             return False, "无会话", 0
+        
+        if not session.is_active():
+            await self.send_text("⚠️ 跑团会话未开启或已暂停，无法加入")
+            return False, "会话未激活", 0
         
         existing = await _storage.get_player(stream_id, user_id)
         if existing:
@@ -354,7 +358,14 @@ class TRPGCommand(BaseCommand):
 
 {player.get_character_sheet()}
 
-使用 /trpg pc set [属性] [值] 自定义角色""")
+{player.get_points_display()}
+
+━━━ 加点说明 ━━━
+/trpg pc add 属性 点数  分配属性点
+/trpg pc reset         重置所有加点
+/trpg pc lock          锁定角色（完成加点）
+
+属性: 力量/str 敏捷/dex 体质/con 智力/int 感知/wis 魅力/cha""")
         return True, f"{character_name} 加入", 2
 
     async def _pc(self, args: str) -> Tuple[bool, Optional[str], int]:
@@ -371,17 +382,88 @@ class TRPGCommand(BaseCommand):
         action = parts[0].lower() if parts else "show"
         
         if action == "show" or not action:
-            await self.send_text(player.get_character_sheet())
+            sheet = player.get_character_sheet()
+            points_info = player.get_points_display()
+            await self.send_text(f"{sheet}\n\n{points_info}")
             return True, None, 2
         
-        elif action == "set" and len(parts) >= 3:
-            attr_name, attr_value = parts[1], parts[2]
-            if player.attributes.set_attribute(attr_name, int(attr_value)):
+        elif action == "add" and len(parts) >= 2:
+            # 加点: /trpg pc add 力量 3
+            attr_name = parts[1]
+            points = int(parts[2]) if len(parts) >= 3 else 1
+            
+            success, msg = player.allocate_point(attr_name, points)
+            if success:
                 await _storage.save_player(player)
-                await self.send_text(f"✅ 已将 {attr_name} 设置为 {attr_value}")
-                return True, None, 2
-            await self.send_text(f"⚠️ 未知属性: {attr_name}")
-            return False, "未知属性", 0
+                await self.send_text(f"✅ {msg}")
+            else:
+                await self.send_text(f"⚠️ {msg}")
+            return success, msg if not success else None, 2
+        
+        elif action == "sub" and len(parts) >= 2:
+            # 减点: /trpg pc sub 力量 2
+            attr_name = parts[1]
+            points = int(parts[2]) if len(parts) >= 3 else 1
+            
+            success, msg = player.allocate_point(attr_name, -points)
+            if success:
+                await _storage.save_player(player)
+                await self.send_text(f"✅ {msg}")
+            else:
+                await self.send_text(f"⚠️ {msg}")
+            return success, msg if not success else None, 2
+        
+        elif action == "reset":
+            # 重置加点
+            success, msg = player.reset_points()
+            if success:
+                await _storage.save_player(player)
+                await self.send_text(f"✅ {msg}")
+            else:
+                await self.send_text(f"⚠️ {msg}")
+            return success, msg if not success else None, 2
+        
+        elif action == "lock":
+            # 锁定角色
+            success, msg = player.lock_character()
+            if success:
+                await _storage.save_player(player)
+                await self.send_text(f"🔒 {msg}\n\n{player.get_character_sheet()}")
+            else:
+                await self.send_text(f"⚠️ {msg}")
+            return success, msg if not success else None, 2
+        
+        elif action == "unlock":
+            # 解锁角色（管理员）
+            if not _is_admin(user_id):
+                await self.send_text("⚠️ 只有管理员可以解锁角色")
+                return False, "权限不足", 0
+            
+            success, msg = player.unlock_character()
+            if success:
+                await _storage.save_player(player)
+                await self.send_text(f"🔓 {msg}")
+            else:
+                await self.send_text(f"⚠️ {msg}")
+            return success, msg if not success else None, 2
+        
+        elif action == "set" and len(parts) >= 3:
+            # 直接设置属性（管理员功能）
+            if not _is_admin(user_id):
+                await self.send_text("⚠️ 直接设置属性需要管理员权限\n普通玩家请使用 /trpg pc add 属性 点数")
+                return False, "权限不足", 0
+            
+            attr_name, attr_value = parts[1], parts[2]
+            try:
+                value = int(attr_value)
+                if player.attributes.set_attribute(attr_name, value):
+                    await _storage.save_player(player)
+                    await self.send_text(f"✅ [管理员] 已将 {attr_name} 设置为 {value}")
+                    return True, None, 2
+                await self.send_text(f"⚠️ 未知属性: {attr_name}")
+            except ValueError:
+                await self.send_text(f"⚠️ 无效数值: {attr_value}")
+            return False, "设置失败", 0
         
         elif action == "leave":
             name = player.character_name
@@ -389,7 +471,15 @@ class TRPGCommand(BaseCommand):
             await self.send_text(f"👋 {name} 离开了冒险...")
             return True, "离开", 2
         
-        await self.send_text("用法: /trpg pc [show|set 属性 值|leave]")
+        await self.send_text("""📋 角色管理命令:
+/trpg pc show        查看角色卡
+/trpg pc add 属性 点数  分配属性点
+/trpg pc sub 属性 点数  减少属性点
+/trpg pc reset       重置所有加点
+/trpg pc lock        锁定角色
+/trpg pc leave       离开跑团
+
+属性: 力量/str 敏捷/dex 体质/con 智力/int 感知/wis 魅力/cha""")
         return False, "格式错误", 0
 
     async def _hp(self, args: str) -> Tuple[bool, Optional[str], int]:

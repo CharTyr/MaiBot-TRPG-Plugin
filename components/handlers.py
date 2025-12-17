@@ -25,8 +25,8 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAY = 1.0  # 秒
 
 # 多人行动收集配置
-DEFAULT_ACTION_COLLECT_WINDOW = 5.0  # 秒，收集行动的时间窗口
-DEFAULT_MIN_ACTIONS_FOR_BATCH = 2    # 触发批量处理的最小行动数
+DEFAULT_ACTION_COLLECT_WINDOW = 60.0  # 秒，等待所有玩家行动的最大时间
+DEFAULT_ACTION_REMINDER_INTERVAL = 20.0  # 秒，提醒未行动玩家的间隔
 
 # 全局引用，由插件主类注入
 _storage: Optional["StorageManager"] = None
@@ -38,65 +38,139 @@ _action_collectors: Dict[str, "ActionCollector"] = {}
 
 
 class ActionCollector:
-    """多人行动收集器"""
+    """
+    多人行动收集器
     
-    def __init__(self, stream_id: str, window: float = DEFAULT_ACTION_COLLECT_WINDOW):
+    等待所有已加入的玩家做出行动决定，或超时后处理已收集的行动
+    """
+    
+    def __init__(
+        self, 
+        stream_id: str, 
+        total_players: int,
+        player_ids: List[str],
+        max_wait_time: float = DEFAULT_ACTION_COLLECT_WINDOW,
+        reminder_interval: float = DEFAULT_ACTION_REMINDER_INTERVAL,
+    ):
         self.stream_id = stream_id
-        self.window = window
-        self.actions: List[Dict] = []  # [{user_id, character_name, action, timestamp}]
+        self.total_players = total_players  # 需要等待的玩家总数
+        self.player_ids = set(player_ids)   # 所有玩家ID
+        self.max_wait_time = max_wait_time
+        self.reminder_interval = reminder_interval
+        
+        self.actions: Dict[str, Dict] = {}  # {user_id: {character_name, action, timestamp}}
         self.first_action_time: Optional[float] = None
+        self.is_processing: bool = False    # 是否正在处理中
+        
         self._lock = asyncio.Lock()
-        self._pending_task: Optional[asyncio.Task] = None
+        self._timeout_task: Optional[asyncio.Task] = None
+        self._reminder_task: Optional[asyncio.Task] = None
+        self._handler_ref = None  # 用于发送消息的 handler 引用
     
-    async def add_action(self, user_id: str, character_name: str, action: str) -> bool:
+    def set_handler(self, handler):
+        """设置 handler 引用用于发送消息"""
+        self._handler_ref = handler
+    
+    async def add_action(
+        self, 
+        user_id: str, 
+        character_name: str, 
+        action: str
+    ) -> Tuple[bool, bool, int, int]:
         """
         添加一个行动
-        Returns: True 如果这是第一个行动（需要启动定时器）
+        
+        Returns:
+            (is_first, all_ready, current_count, total_count)
+            - is_first: 是否是第一个行动（需要启动定时器）
+            - all_ready: 是否所有玩家都已行动
+            - current_count: 当前已行动人数
+            - total_count: 总玩家数
         """
-        import time
         async with self._lock:
+            if self.is_processing:
+                return False, False, len(self.actions), self.total_players
+            
             now = time.time()
+            is_first = self.first_action_time is None
             
-            # 检查是否是同一玩家的重复行动（去重）
-            for existing in self.actions:
-                if existing["user_id"] == user_id:
-                    # 更新该玩家的行动
-                    existing["action"] = action
-                    existing["timestamp"] = now
-                    return False
-            
-            self.actions.append({
+            # 记录或更新行动
+            is_update = user_id in self.actions
+            self.actions[user_id] = {
                 "user_id": user_id,
                 "character_name": character_name,
                 "action": action,
                 "timestamp": now,
-            })
+            }
             
-            if self.first_action_time is None:
+            if is_first:
                 self.first_action_time = now
-                return True
-            return False
+            
+            current_count = len(self.actions)
+            all_ready = current_count >= self.total_players
+            
+            return is_first and not is_update, all_ready, current_count, self.total_players
+    
+    def get_missing_players(self) -> List[str]:
+        """获取尚未行动的玩家ID列表"""
+        return [pid for pid in self.player_ids if pid not in self.actions]
+    
+    def get_acted_players(self) -> List[str]:
+        """获取已行动的玩家ID列表"""
+        return list(self.actions.keys())
     
     async def get_and_clear(self) -> List[Dict]:
         """获取所有收集的行动并清空"""
         async with self._lock:
-            actions = self.actions.copy()
-            self.actions = []
+            actions = list(self.actions.values())
+            self.actions = {}
             self.first_action_time = None
+            self.is_processing = False
             return actions
     
     def get_action_count(self) -> int:
         """获取当前收集的行动数量"""
         return len(self.actions)
     
-    def set_pending_task(self, task: asyncio.Task):
-        """设置待处理的定时任务"""
-        self._pending_task = task
+    def mark_processing(self):
+        """标记为正在处理"""
+        self.is_processing = True
     
-    def cancel_pending_task(self):
-        """取消待处理的定时任务"""
-        if self._pending_task and not self._pending_task.done():
-            self._pending_task.cancel()
+    def start_timeout_task(self, callback):
+        """启动超时任务"""
+        if self._timeout_task and not self._timeout_task.done():
+            self._timeout_task.cancel()
+        
+        async def timeout_handler():
+            await asyncio.sleep(self.max_wait_time)
+            await callback()
+        
+        self._timeout_task = asyncio.create_task(timeout_handler())
+    
+    def start_reminder_task(self, callback):
+        """启动提醒任务"""
+        if self._reminder_task and not self._reminder_task.done():
+            self._reminder_task.cancel()
+        
+        async def reminder_handler():
+            while True:
+                await asyncio.sleep(self.reminder_interval)
+                if self.is_processing:
+                    break
+                missing = self.get_missing_players()
+                if missing:
+                    await callback(missing)
+                else:
+                    break
+        
+        self._reminder_task = asyncio.create_task(reminder_handler())
+    
+    def cancel_all_tasks(self):
+        """取消所有待处理任务"""
+        if self._timeout_task and not self._timeout_task.done():
+            self._timeout_task.cancel()
+        if self._reminder_task and not self._reminder_task.done():
+            self._reminder_task.cancel()
 
 
 def set_handler_services(storage: "StorageManager", dm: "DMEngine", config: dict):
@@ -266,35 +340,88 @@ class TRPGMessageHandler(BaseEventHandler):
         self, stream_id: str, session, user_id: str, 
         character_name: str, action: str, player
     ):
-        """处理多人模式下的行动收集"""
+        """处理多人模式下的行动收集 - 等待所有玩家行动"""
         global _action_collectors
         
         multiplayer_config = _plugin_config.get("multiplayer", {})
-        collect_window = multiplayer_config.get("action_collect_window", DEFAULT_ACTION_COLLECT_WINDOW)
+        max_wait_time = multiplayer_config.get("action_collect_window", DEFAULT_ACTION_COLLECT_WINDOW)
+        reminder_interval = multiplayer_config.get("reminder_interval", DEFAULT_ACTION_REMINDER_INTERVAL)
+        
+        # 获取所有玩家
+        all_players = await _storage.get_players_in_session(stream_id)
+        player_ids = [p.user_id for p in all_players]
+        total_players = len(player_ids)
         
         # 获取或创建行动收集器
-        if stream_id not in _action_collectors:
-            _action_collectors[stream_id] = ActionCollector(stream_id, collect_window)
+        if stream_id not in _action_collectors or _action_collectors[stream_id].is_processing:
+            _action_collectors[stream_id] = ActionCollector(
+                stream_id=stream_id,
+                total_players=total_players,
+                player_ids=player_ids,
+                max_wait_time=max_wait_time,
+                reminder_interval=reminder_interval,
+            )
         
         collector = _action_collectors[stream_id]
-        is_first = await collector.add_action(user_id, character_name, action)
+        collector.set_handler(self)
+        
+        # 添加行动
+        is_first, all_ready, current_count, total_count = await collector.add_action(
+            user_id, character_name, action
+        )
         
         if is_first:
-            # 第一个行动，启动定时器
-            logger.info(f"[TRPGHandler] 多人模式：开始收集行动，等待 {collect_window} 秒")
+            # 第一个行动，启动等待
+            logger.info(f"[TRPGHandler] 多人模式：开始收集行动，等待所有 {total_count} 名玩家（最长 {max_wait_time} 秒）")
             
-            async def process_after_delay():
-                await asyncio.sleep(collect_window)
-                await self._process_collected_actions(stream_id)
+            # 发送等待提示
+            await self.send_text(
+                stream_id, 
+                f"⏳ 等待其他玩家行动... ({current_count}/{total_count})\n"
+                f"💡 最长等待 {int(max_wait_time)} 秒，或所有玩家行动后立即处理"
+            )
             
-            task = asyncio.create_task(process_after_delay())
-            collector.set_pending_task(task)
+            # 启动超时任务
+            async def on_timeout():
+                await self._process_collected_actions(stream_id, timeout=True)
+            
+            collector.start_timeout_task(on_timeout)
+            
+            # 启动提醒任务
+            async def on_reminder(missing_ids: List[str]):
+                missing_players = []
+                for pid in missing_ids:
+                    p = await _storage.get_player(stream_id, pid)
+                    if p:
+                        missing_players.append(p.character_name)
+                
+                if missing_players:
+                    acted_count = collector.get_action_count()
+                    await self.send_text(
+                        stream_id,
+                        f"⏰ 等待中... ({acted_count}/{total_count})\n"
+                        f"📢 尚未行动: {', '.join(missing_players)}"
+                    )
+            
+            collector.start_reminder_task(on_reminder)
+        
         else:
-            # 后续行动，通知已收集
-            count = collector.get_action_count()
-            logger.debug(f"[TRPGHandler] 多人模式：已收集 {count} 个行动")
+            # 后续行动
+            logger.debug(f"[TRPGHandler] 多人模式：已收集 {current_count}/{total_count} 个行动")
+            
+            # 发送进度更新
+            await self.send_text(
+                stream_id,
+                f"✅ {character_name} 已行动 ({current_count}/{total_count})"
+            )
+        
+        # 检查是否所有人都已行动
+        if all_ready:
+            logger.info(f"[TRPGHandler] 多人模式：所有 {total_count} 名玩家已行动，立即处理")
+            collector.cancel_all_tasks()
+            await self._process_collected_actions(stream_id, timeout=False)
 
-    async def _process_collected_actions(self, stream_id: str):
+    async def _process_collected_actions(self, stream_id: str, timeout: bool = False):
         """处理收集到的所有行动"""
         global _action_collectors
         
@@ -302,6 +429,11 @@ class TRPGMessageHandler(BaseEventHandler):
             return
         
         collector = _action_collectors[stream_id]
+        
+        # 标记为正在处理，防止新行动加入
+        collector.mark_processing()
+        collector.cancel_all_tasks()
+        
         actions = await collector.get_and_clear()
         
         if not actions:
@@ -311,7 +443,26 @@ class TRPGMessageHandler(BaseEventHandler):
         if not session or not session.is_active():
             return
         
-        logger.info(f"[TRPGHandler] 多人模式：处理 {len(actions)} 个行动")
+        # 获取未行动的玩家信息
+        all_players = await _storage.get_players_in_session(stream_id)
+        acted_ids = {act["user_id"] for act in actions}
+        missing_players = [p for p in all_players if p.user_id not in acted_ids]
+        
+        # 发送处理开始提示
+        if timeout and missing_players:
+            missing_names = [p.character_name for p in missing_players]
+            await self.send_text(
+                stream_id,
+                f"⏱️ 等待超时，开始处理已收集的 {len(actions)} 个行动\n"
+                f"⚠️ 未行动: {', '.join(missing_names)}（本轮跳过）"
+            )
+        else:
+            await self.send_text(
+                stream_id,
+                f"✨ 所有玩家已行动！正在处理 {len(actions)} 个行动..."
+            )
+        
+        logger.info(f"[TRPGHandler] 多人模式：处理 {len(actions)} 个行动 (超时={timeout})")
         
         if len(actions) == 1:
             # 只有一个行动，使用单人模式处理
@@ -352,20 +503,39 @@ class TRPGMessageHandler(BaseEventHandler):
                     await asyncio.sleep(retry_delay * (2 ** attempt))
         
         if response:
-            session.add_history("dm", response)
+            # 解析状态变化
+            state_changes = _dm_engine.parse_state_changes(response, player)
+            
+            # 应用状态变化
+            change_summary = ""
+            if state_changes.has_changes():
+                change_summary = await _dm_engine.apply_state_changes(
+                    state_changes, session, _storage
+                )
+                logger.info(f"[TRPGHandler] 应用状态变化: {change_summary}")
+            
+            # 清理响应中的状态标签
+            clean_response = _dm_engine.clean_state_tags(response)
+            
+            session.add_history("dm", clean_response)
             
             # 更新张力等级
-            _dm_engine.update_tension_level(response, session)
+            _dm_engine.update_tension_level(clean_response, session)
             
             # 检查是否需要更新剧情摘要
             if await _dm_engine.should_update_summary(session):
                 await _dm_engine.update_story_summary(session)
             
             await _storage.save_session(session)
-            await self.send_text(stream_id, response)
+            
+            # 发送响应（如果有状态变化，附加变化摘要）
+            if change_summary:
+                await self.send_text(stream_id, f"{clean_response}\n\n━━━ 状态变化 ━━━\n{change_summary}")
+            else:
+                await self.send_text(stream_id, clean_response)
             
             # 检测高潮场景，自动生成图片
-            await self._check_and_generate_climax_image(stream_id, session, response)
+            await self._check_and_generate_climax_image(stream_id, session, clean_response)
         else:
             logger.error(f"[TRPGHandler] DM 响应生成失败，已重试 {max_retries} 次: {last_error}")
             await self.send_text(stream_id, "⚠️ DM 思考中遇到了问题，请稍后再试...")
@@ -453,20 +623,41 @@ class TRPGMessageHandler(BaseEventHandler):
                     await asyncio.sleep(retry_delay * (2 ** attempt))
         
         if response:
-            session.add_history("dm", f"[多人回合]\n{response}")
+            # 解析所有玩家的状态变化
+            all_change_summaries = []
+            for act in actions:
+                act_player = await _storage.get_player(stream_id, act["user_id"])
+                state_changes = _dm_engine.parse_state_changes(response, act_player)
+                if state_changes.has_changes():
+                    change_summary = await _dm_engine.apply_state_changes(
+                        state_changes, session, _storage
+                    )
+                    if change_summary:
+                        all_change_summaries.append(change_summary)
+            
+            # 清理响应中的状态标签
+            clean_response = _dm_engine.clean_state_tags(response)
+            
+            session.add_history("dm", f"[多人回合]\n{clean_response}")
             
             # 更新张力等级
-            _dm_engine.update_tension_level(response, session)
+            _dm_engine.update_tension_level(clean_response, session)
             
             # 检查是否需要更新剧情摘要
             if await _dm_engine.should_update_summary(session):
                 await _dm_engine.update_story_summary(session)
             
             await _storage.save_session(session)
-            await self.send_text(stream_id, response)
+            
+            # 发送响应（如果有状态变化，附加变化摘要）
+            if all_change_summaries:
+                combined_changes = "\n".join(all_change_summaries)
+                await self.send_text(stream_id, f"{clean_response}\n\n━━━ 状态变化 ━━━\n{combined_changes}")
+            else:
+                await self.send_text(stream_id, clean_response)
             
             # 检测高潮场景，自动生成图片
-            await self._check_and_generate_climax_image(stream_id, session, response)
+            await self._check_and_generate_climax_image(stream_id, session, clean_response)
         else:
             logger.error(f"[TRPGHandler] 批量 DM 响应生成失败: {last_error}")
             await self.send_text(stream_id, "⚠️ DM 思考中遇到了问题，请稍后再试...")
