@@ -9,6 +9,11 @@ data/sessions/
 data/players/
 data/save_slots/
 data/config/
+config.toml
+data/players/*
+data/players/*
+data/sessions/*
+
 
 # IDE
 .vscode/
@@ -19,3 +24,4 @@ data/config/
 # OS
 .DS_Store
 Thumbs.db
+
